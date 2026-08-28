@@ -1,0 +1,12 @@
+[[plugin]]
+id = "luxus/elgato-control"
+name = "Elgato Control"
+version = "1.0.0"
+author = "luxus"
+license = "MIT"
+icon = "keyboard"
+description = "Native Linux controls for Elgato Stream Deck, Stream Deck +, Pedal, Wave, and Key Lights."
+deprecated = false
+plugin_api = 24
+tags = ["bar", "panel", "service", "hardware", "utility"]
+dependencies = ["python3", "libhidapi-hidraw", "imagemagick"]

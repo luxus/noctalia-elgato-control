@@ -1,0 +1,43 @@
+{
+  "name": "Noctalia Default",
+  "brightness": 55,
+  "lights": [],
+  "keys": [
+    {"label": "Terminal", "action": "terminal", "color": [0, 174, 239]},
+    {"label": "Browser", "action": "browser", "color": [255, 145, 0]},
+    {"label": "Files", "action": "files", "color": [70, 175, 115]},
+    {"label": "Mic", "action": "mic_mute", "color": [220, 65, 65]},
+    {"label": "Play/Pause", "action": "media_play_pause", "color": [155, 90, 220]},
+    {"label": "Capture", "action": "screenshot", "color": [65, 145, 235]},
+    {"label": "Lights", "action": "lights_toggle", "color": [255, 190, 45]},
+    {"label": "Lock", "action": "lock", "color": [145, 150, 160]}
+  ],
+  "classicKeys": [
+    {"label": "Terminal", "action": "terminal", "color": [0, 174, 239]},
+    {"label": "Browser", "action": "browser", "color": [255, 145, 0]},
+    {"label": "Files", "action": "files", "color": [70, 175, 115]},
+    {"label": "Mic", "action": "mic_mute", "color": [220, 65, 65]},
+    {"label": "Play/Pause", "action": "media_play_pause", "color": [155, 90, 220]},
+    {"label": "Capture", "action": "screenshot", "color": [65, 145, 235]},
+    {"label": "Lights", "action": "lights_toggle", "color": [255, 190, 45]},
+    {"label": "Lock", "action": "lock", "color": [145, 150, 160]},
+    {"label": "Prev WS", "action": "workspace_prev", "color": [90, 120, 180]},
+    {"label": "Next WS", "action": "workspace_next", "color": [90, 120, 180]},
+    {"label": "Overview", "action": "overview", "color": [120, 140, 160]},
+    {"label": "Mute Out", "action": "volume_mute", "color": [200, 90, 70]},
+    {"label": "Vol Down", "action": "volume_down", "color": [70, 160, 140]},
+    {"label": "Vol Up", "action": "volume_up", "color": [70, 160, 140]},
+    {"label": "Launcher", "action": "launcher", "color": [180, 140, 80]}
+  ],
+  "dials": [
+    {"label": "Volume", "left": "volume_down", "right": "volume_up", "press": "volume_mute"},
+    {"label": "Microphone", "left": "mic_down", "right": "mic_up", "press": "mic_mute"},
+    {"label": "Key Lights", "left": "lights_brightness_down", "right": "lights_brightness_up", "press": "lights_toggle"},
+    {"label": "Light temperature", "left": "lights_warmer", "right": "lights_cooler", "press": "lights_toggle"}
+  ],
+  "pedals": [
+    {"label": "Mic mute", "action": "mic_mute"},
+    {"label": "Push-to-talk", "action": "voxtype_push_to_talk"},
+    {"label": "Capture", "action": "screenshot"}
+  ]
+}

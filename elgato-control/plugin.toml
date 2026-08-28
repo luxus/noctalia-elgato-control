@@ -1,0 +1,55 @@
+id = "luxus/elgato-control"
+name = "Elgato Control"
+version = "1.0.0"
+plugin_api = 24
+author = "luxus"
+license = "MIT"
+icon = "keyboard"
+description = "Native Linux controls for Elgato Stream Deck, Stream Deck +, Pedal, Wave, and Key Lights."
+tags = ["bar", "panel", "service", "hardware", "utility"]
+dependencies = ["python3", "libhidapi-hidraw", "imagemagick", "avahi-browse", "wtype", "wpctl"]
+
+[[setting]]
+key = "brightness"
+type = "int"
+label_key = "settings.brightness.label"
+description_key = "settings.brightness.description"
+default = 55
+min = 1
+max = 100
+
+[[setting]]
+key = "hidapi_path"
+type = "string"
+label_key = "settings.hidapi_path.label"
+description_key = "settings.hidapi_path.description"
+default = ""
+advanced = true
+
+[[widget]]
+id = "widget"
+entry = "widget.luau"
+
+  [[widget.setting]]
+  key = "show_label"
+  type = "bool"
+  label_key = "settings.show_label.label"
+  description_key = "settings.show_label.description"
+  default = false
+
+[[panel]]
+id = "panel"
+entry = "panel.luau"
+width = 760
+height = 640
+placement = "floating"
+position = "center"
+open_near_click = true
+
+[[service]]
+id = "service"
+entry = "service.luau"
+
+[[shortcut]]
+id = "toggle"
+entry = "shortcut.luau"

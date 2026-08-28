@@ -1,0 +1,24 @@
+{
+  "settings": {
+    "brightness": {
+      "label": "Deck brightness",
+      "description": "Default backlight level written to connected Stream Decks (1–100)."
+    },
+    "hidapi_path": {
+      "label": "hidapi library path",
+      "description": "Optional absolute path to libhidapi-hidraw.so. On NixOS set this if ctypes cannot find the library."
+    },
+    "show_label": {
+      "label": "Show bar label",
+      "description": "Show the Elgato Control name next to the bar icon."
+    }
+  },
+  "widget": {
+    "connected": "Elgato Control · Connected",
+    "disconnected": "Elgato Control · Disconnected",
+    "label": "Elgato"
+  },
+  "shortcut": {
+    "label": "Elgato Control"
+  }
+}
