@@ -47,6 +47,7 @@
       apps.${system}.default = {
         type = "app";
         program = "${elgato-control}/bin/elgato-control";
+        meta.description = "Native Linux HID CLI for Elgato Stream Deck hardware";
       };
 
       checks.${system}.elgato-control = pkgs.runCommand "elgato-control-check" {
