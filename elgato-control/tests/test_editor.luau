@@ -1,5 +1,22 @@
 -- Panel/editor state machine: select key → set action → profile argv → status.
-local editor = require("../editor.luau")
+-- Standalone `luau` (nixpkgs) does not implement Noctalia's require("./x.luau").
+-- Load the module from the repo path so `nix flake check` can run this file.
+local function loadEditor()
+	local path = "elgato-control/editor.luau"
+	local handle = io.open(path, "r")
+	if not handle then
+		handle = io.open("../editor.luau", "r")
+		path = "../editor.luau"
+	end
+	assert(handle, "could not open editor.luau")
+	local source = handle:read("*a")
+	handle:close()
+	local chunk, err = load(source, "@" .. path)
+	assert(chunk, err)
+	return chunk()
+end
+
+local editor = loadEditor()
 
 local failed = 0
 
