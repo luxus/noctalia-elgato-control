@@ -93,10 +93,10 @@ class NixOsDesktopPathTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=False):
                 with mock.patch.object(module.pathlib.Path, "home", return_value=pathlib.Path(directory) / "home"):
                     found = dict(module.desktop_applications())
-            self.assertEqual("Lea Terminal", found["lea-term"])
-            self.assertNotIn("hidden", found)
-            self.assertTrue(module.desktop_file_exists("lea-term"))
-            self.assertEqual("lea-term", module.desktop_entry("lea-term")["desktopId"])
+                    self.assertEqual("Lea Terminal", found["lea-term"])
+                    self.assertNotIn("hidden", found)
+                    self.assertTrue(module.desktop_file_exists("lea-term"))
+                    self.assertEqual("lea-term", module.desktop_entry("lea-term")["desktopId"])
 
     def test_search_path_includes_nixos_bin_dirs(self):
         with mock.patch.dict(os.environ, {"PATH": "/opt/bin", "USER": "luxus", "HOME": "/home/luxus"}, clear=False):

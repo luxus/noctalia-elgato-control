@@ -1,8 +1,8 @@
 --!nonstrict
 -- Omarchy-style visual key/dial/pedal editor on Noctalia v5 (plugin_api 24).
 -- Layout follows official-plugins/example/panel.luau: column/row/scroll only.
--- ui.box is a leaf swatch, not a flex parent — using it as a layout parent
--- produced a black panel on lea.
+-- The box node is a leaf color swatch, not a flex parent — using it as a layout
+-- parent produced a black panel on lea.
 
 if type(panel) ~= "table" or type(panel.render) ~= "function" then
   error("Elgato Control: panel.render is missing. Need Noctalia v5 plugin_api 24. A black panel usually means the surface API never ran.")
