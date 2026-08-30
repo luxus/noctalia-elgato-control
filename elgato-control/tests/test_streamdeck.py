@@ -1,6 +1,8 @@
 import importlib.machinery
 import importlib.util
+import os
 import pathlib
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -185,6 +187,186 @@ class ParserTests(unittest.TestCase):
         daemon = self.make_daemon()
         daemon.parse_pedal(bytes([1, 0, 3, 0, 0, 1, 0]))
         self.assertEqual(["middle"], daemon.actions)
+
+    def test_parse_key_report_classic_v2_uses_offset_four(self):
+        spec = module.DEVICE_SPECS[0x0080]
+        payload = bytes([1, 0, 15, 0] + [0, 1] + [0] * 13)
+        states = module.parse_key_report(payload, spec)
+        self.assertEqual(15, len(states))
+        self.assertEqual(1, states[1])
+        self.assertEqual(0, states[0])
+
+    def test_parse_key_report_rejects_non_key_plus_reports(self):
+        spec = module.DEVICE_SPECS[module.PLUS]
+        self.assertIsNone(module.parse_key_report(bytes([1, 2, 10, 0, 1]), spec))
+
+    def test_plus_dial_press_is_edge_triggered(self):
+        daemon = self.make_daemon()
+        pressed = bytes([1, 3, 0, 0, 0, 0, 1, 0, 0])
+        daemon.parse_plus(pressed)
+        daemon.parse_plus(pressed)
+        self.assertEqual(["press-1"], daemon.actions)
+
+    def test_plus_dial_rotation_maps_signed_ticks(self):
+        daemon = self.make_daemon()
+        report = bytes([1, 3, 0, 0, 1, 1, 255, 0, 0])
+        daemon.parse_plus(report)
+        self.assertEqual(["right-0", "left-1"], daemon.actions)
+
+
+class HidapiTests(unittest.TestCase):
+    def test_elgato_hidapi_is_the_first_candidate(self):
+        path = "/nix/store/fake-hidapi/lib/libhidapi-hidraw.so.0"
+        with mock.patch.dict(os.environ, {"ELGATO_HIDAPI": path, "HIDAPI_PATH": "/unused.so"}, clear=False):
+            candidates = module.hidapi_candidates()
+        self.assertEqual(path, candidates[0])
+        self.assertNotIn("/unused.so", candidates[:1])
+
+    def test_hidapi_path_is_used_when_elgato_hidapi_is_unset(self):
+        path = "/opt/libhidapi-hidraw.so.0"
+        env = {key: value for key, value in os.environ.items() if key not in ("ELGATO_HIDAPI", "HIDAPI_PATH")}
+        env["HIDAPI_PATH"] = path
+        with mock.patch.dict(os.environ, env, clear=True):
+            candidates = module.hidapi_candidates()
+        self.assertEqual(path, candidates[0])
+
+    def test_empty_elgato_hidapi_is_skipped_and_nixos_path_remains(self):
+        env = {key: value for key, value in os.environ.items() if key not in ("ELGATO_HIDAPI", "HIDAPI_PATH")}
+        env["ELGATO_HIDAPI"] = ""
+        env["HIDAPI_PATH"] = ""
+        with mock.patch.dict(os.environ, env, clear=True):
+            candidates = module.hidapi_candidates()
+        self.assertNotIn("", candidates)
+        self.assertIn("libhidapi-hidraw.so.0", candidates)
+        self.assertIn("/run/current-system/sw/lib/libhidapi-hidraw.so.0", candidates)
+        self.assertIn("/usr/lib/x86_64-linux-gnu/libhidapi-hidraw.so.0", candidates)
+
+    def test_hid_loads_elgato_hidapi_before_other_names(self):
+        chosen = "/nix/store/aaaa/lib/libhidapi-hidraw.so.0"
+        loaded = []
+
+        def fake_cdll(name):
+            loaded.append(name)
+            if name != chosen:
+                raise OSError("not this one")
+            return mock.Mock()
+
+        with mock.patch.dict(os.environ, {"ELGATO_HIDAPI": chosen}, clear=False):
+            with mock.patch.object(module.ctypes, "CDLL", side_effect=fake_cdll):
+                hid = module.Hid()
+        self.assertEqual(chosen, loaded[0])
+        self.assertIsNotNone(hid.lib)
+        hid.lib.hid_init.assert_called_once()
+
+    def test_hid_falls_through_when_elgato_hidapi_cannot_load(self):
+        def fake_cdll(name):
+            if name == "/missing/libhidapi-hidraw.so.0":
+                raise OSError("missing")
+            if name == "libhidapi-hidraw.so.0":
+                return mock.Mock()
+            raise OSError("skip")
+
+        with mock.patch.dict(os.environ, {"ELGATO_HIDAPI": "/missing/libhidapi-hidraw.so.0"}, clear=False):
+            with mock.patch.object(module.ctypes, "CDLL", side_effect=fake_cdll):
+                hid = module.Hid()
+        self.assertTrue(hid.lib.hid_init.called)
+
+    def test_hid_errors_when_no_candidate_loads(self):
+        with mock.patch.object(module.ctypes, "CDLL", side_effect=OSError("not found")):
+            with self.assertRaisesRegex(RuntimeError, "hidapi-hidraw"):
+                module.Hid()
+
+
+class ProtocolEncodeTests(unittest.TestCase):
+    def fake_hid(self):
+        hid = mock.Mock()
+        hid.writes = []
+        hid.features = []
+        hid.write.side_effect = lambda handle, values: hid.writes.append(list(values)) or len(values)
+        hid.feature.side_effect = lambda handle, values, length=32: hid.features.append((list(values), length)) or length
+        return hid
+
+    def daemon_with(self, hid):
+        daemon = module.Daemon.__new__(module.Daemon)
+        daemon.hid = hid
+        daemon.profile = {"dials": [{"label": "Volume"}], "brightness": 55}
+        daemon.light_states = []
+        daemon.lcd_signature = None
+        daemon.status = {"error": ""}
+        daemon.brightness = 55
+        return daemon
+
+    def test_original_brightness_feature_report(self):
+        hid = self.fake_hid()
+        daemon = self.daemon_with(hid)
+        spec = module.DEVICE_SPECS[module.ORIGINAL]
+        daemon.set_brightness("dev", spec, 40)
+        values, length = hid.features[0]
+        self.assertEqual([0x05, 0x55, 0xAA, 0xD1, 0x01, 40], values)
+        self.assertEqual(17, length)
+
+    def test_classic_jpeg_brightness_feature_report(self):
+        hid = self.fake_hid()
+        daemon = self.daemon_with(hid)
+        spec = module.DEVICE_SPECS[0x0080]
+        daemon.set_brightness("dev", spec, 55)
+        values, length = hid.features[0]
+        self.assertEqual([0x03, 0x08, 55], values)
+        self.assertEqual(32, length)
+
+    def test_jpeg_key_image_pages_use_v2_header(self):
+        hid = self.fake_hid()
+        daemon = self.daemon_with(hid)
+        spec = module.DEVICE_SPECS[0x0080]
+        payload = bytes(range(256)) * 8
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as handle:
+            handle.write(payload)
+            path = pathlib.Path(handle.name)
+        try:
+            with mock.patch.object(module, "rendered_key_image", return_value=path):
+                daemon.send_key_image("dev", spec, 3, {"action": "lock", "label": "Lock"})
+        finally:
+            path.unlink(missing_ok=True)
+        self.assertEqual(3, len(hid.writes))
+        self.assertEqual([0x02, 0x07, 3, 0, 1016 & 255, 1016 >> 8, 0, 0], hid.writes[0][:8])
+        self.assertEqual(1024, len(hid.writes[0]))
+        self.assertEqual([0x02, 0x07, 3, 1, 16, 0, 2, 0], hid.writes[-1][:8])
+        self.assertEqual(list(payload[:1016]), hid.writes[0][8:8 + 1016])
+
+    def test_original_bmp_pages_mirror_columns_in_header(self):
+        hid = self.fake_hid()
+        daemon = self.daemon_with(hid)
+        spec = module.DEVICE_SPECS[module.ORIGINAL]
+        payload = b"BMPIMG"
+        with tempfile.NamedTemporaryFile(suffix=".bmp", delete=False) as handle:
+            handle.write(payload)
+            path = pathlib.Path(handle.name)
+        try:
+            with mock.patch.object(module, "rendered_key_image", return_value=path):
+                daemon.send_key_image("dev", spec, 0, {"action": "lock", "label": "Lock"})
+        finally:
+            path.unlink(missing_ok=True)
+        self.assertEqual(2, len(hid.writes))
+        self.assertEqual(8191, len(hid.writes[0]))
+        self.assertEqual([0x02, 0x01, 1, 0, 0, 5], hid.writes[0][:6])
+        self.assertEqual([0x02, 0x01, 2, 0, 1, 5], hid.writes[1][:6])
+
+    def test_lcd_pages_use_plus_lcd_header(self):
+        hid = self.fake_hid()
+        daemon = self.daemon_with(hid)
+        jpeg = b"\xff\xd8" + b"J" * 1200
+
+        def fake_run(command, **_kwargs):
+            pathlib.Path(command[-1]).write_bytes(jpeg)
+            return subprocess.CompletedProcess(command, 0)
+
+        with mock.patch.object(module.shutil, "which", return_value="magick"), \
+             mock.patch.object(module.subprocess, "run", side_effect=fake_run):
+            daemon.update_lcd("dev", force=True)
+        self.assertGreaterEqual(len(hid.writes), 2)
+        self.assertEqual([0x02, 0x0B, 0, 0, 1016 & 255, 1016 >> 8, 0, 0], hid.writes[0][:8])
+        self.assertEqual(1, hid.writes[-1][3])
+        self.assertEqual(1024, len(hid.writes[0]))
 
 
 if __name__ == "__main__":
