@@ -11,7 +11,7 @@
       python = pkgs.python3;
       elgato-control = pkgs.stdenvNoCC.mkDerivation {
         pname = "elgato-control";
-        version = "1.0.0";
+        version = "1.1.0";
         src = ./elgato-control;
         nativeBuildInputs = [ pkgs.makeWrapper ];
         dontBuild = true;
@@ -62,6 +62,7 @@
         for f in elgato-control/*.luau; do
           luau-compile --binary "$f" >/dev/null
         done
+        luau elgato-control/tests/test_editor.luau
         export XDG_CONFIG_HOME="$PWD/tmp-xdg/config"
         export XDG_STATE_HOME="$PWD/tmp-xdg/state"
         export XDG_CACHE_HOME="$PWD/tmp-xdg/cache"

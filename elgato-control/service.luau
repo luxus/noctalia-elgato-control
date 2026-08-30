@@ -1,6 +1,13 @@
 --!nonstrict
 local helper = (noctalia.pluginDir() or ".") .. "/bin/elgato-control"
-local statusPath = noctalia.expandPath("~/.local/state/elgato-control/status.json")
+
+local function statusPath()
+  local xdg = type(noctalia.getenv) == "function" and noctalia.getenv("XDG_STATE_HOME") or nil
+  if type(xdg) == "string" and xdg ~= "" then
+    return xdg .. "/elgato-control/status.json"
+  end
+  return noctalia.expandPath("~/.local/state/elgato-control/status.json")
+end
 
 local function quote(path)
   return "'" .. tostring(path):gsub("'", "'\\''") .. "'"
@@ -36,7 +43,7 @@ local function publish(status)
 end
 
 local function readStatus()
-  local raw = noctalia.readFile(statusPath)
+  local raw = noctalia.readFile(statusPath())
   if not raw or raw == "" then
     publish({ running = false })
     return
@@ -48,7 +55,7 @@ local function readStatus()
 end
 
 function onEnable()
-  noctalia.runAsync(quote(helper) .. " init", function(_result)
+  noctalia.runAsync({ helper, "init" }, function(_result)
     startDaemon()
     readStatus()
   end)

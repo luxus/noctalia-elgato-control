@@ -2,19 +2,28 @@
 
 Unofficial native Linux controls for Elgato Stream Deck hardware, ported from
 [omarchy-elgato-control](https://github.com/amitcpatel/omarchy-elgato-control)
-to the Noctalia v5 Luau plugin API.
+to the Noctalia v5 Luau plugin API (`plugin_api` 24). Version **1.1.0**.
 
 This is not affiliated with Elgato.
 
 Supported host: **lea**, a NixOS workstation on `x86_64-linux`. There is no
 Darwin, macOS, aarch64, emily, zoe, or vanessa support.
 
+Install, udev, visual editor, and release notes: repository root
+[`README.md`](../README.md) and [`CHANGELOG.md`](../CHANGELOG.md).
+
+```bash
+noctalia msg plugins source add elgato git https://github.com/luxus/noctalia-elgato-control
+noctalia msg plugins enable luxus/elgato-control
+```
+
 ## What changed from the Omarchy plugin
 
 - QML bar / panel / service rewritten as `widget.luau`, `panel.luau`, `service.luau`
+- Visual editor ported to Luau: click a key/dial/pedal, pick an action, live apply
 - Manifest is `plugin.toml` (`luxus/elgato-control`, `plugin_api = 24`)
-- HID daemon still Python + hidapi, now with the 15-key Stream Deck family
-- Actions target Noctalia IPC (`noctalia msg …`) with niri / Hyprland / generic fallbacks
+- HID daemon still Python + hidapi, with the 15-key Stream Deck family
+- Actions target Noctalia IPC (`noctalia msg …`) with niri fallbacks on lea
 
 ## Supported hardware
 
@@ -31,54 +40,10 @@ Darwin, macOS, aarch64, emily, zoe, or vanessa support.
 | Wave:3 | PipeWire / ALSA | gain, mute, headphones, presets |
 
 Original 15-key and Stream Deck + can be connected at the same time. Each has
-its own key map (`classicKeys` vs `keys`).
+its own key map (`classicKeys` vs `keys`). Plus LCD/dials, Pedal, Wave, and
+Key Lights only show in the panel when that device is present.
 
-## Install
-
-```bash
-noctalia msg plugins source add elgato git https://github.com/luxus/noctalia-elgato-control
-noctalia msg plugins enable luxus/elgato-control
-```
-
-Local checkout:
-
-```bash
-noctalia msg plugins source add elgato-dev path ~/src/noctalia-elgato-control
-```
-
-### udev / NixOS
-
-The plugin talks to Stream Deck hidraw nodes. On NixOS, import this flake's
-module (udev rules only):
-
-```nix
-{
-  inputs.elgato-control.url = "github:luxus/noctalia-elgato-control";
-
-  outputs = { nixpkgs, elgato-control, ... }: {
-    nixosConfigurations.lea = nixpkgs.lib.nixosSystem {
-      system = "x86_64-linux";
-      modules = [
-        ./configuration.nix
-        elgato-control.nixosModules.default
-      ];
-    };
-  };
-}
-```
-
-Or copy `udev/99-elgato-streamdeck.rules` into `/etc/udev/rules.d/` (or set
-`services.udev.extraRules` to the same text), then reload and replug:
-
-```bash
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-```
-
-`TAG+="uaccess"` covers a seated session. `GROUP="input"` is also set; being in
-the `input` group is a useful fallback.
-
-### hidapi on NixOS
+## hidapi on NixOS
 
 Python ctypes does not search the Nix store unless the library is on the loader
 path. This plugin does **not** require nix-ld.
@@ -99,30 +64,12 @@ The flake package wraps the CLI with nixpkgs `hidapi`:
 nix run . -- status --json
 ```
 
-Find a store path without installing system-wide:
-
-```bash
-nix build nixpkgs#hidapi --print-out-paths
-# then: <result>/lib/libhidapi-hidraw.so.0
-```
-
-### Dependencies
-
-- Python 3 (stdlib + ctypes only)
-- `libhidapi-hidraw`
-- ImageMagick (`magick` or `convert`)
-- Optional: `avahi-browse`, `wpctl`, `amixer`, `wtype`, `playerctl`, `grim`
-
 ## Profile
 
 `~/.config/elgato-control/profile.json`
 
-Existing Omarchy / Elgato Control profiles are migrated. Missing
-`classicKeys` are filled from the eight Plus keys plus workspace / volume /
-launcher defaults.
-
 Commands below are from the **repository root**. The `status --json` object is
-the plugin contract (pretty-printed JSON without `--json` is the same object).
+the plugin contract.
 
 ```bash
 elgato-control/bin/elgato-control init
@@ -133,21 +80,15 @@ elgato-control/bin/elgato-control set-key --device plus 1 terminal
 
 ## Tests
 
-No Stream Deck, Key Light, Wave:3, or Noctalia shell is required. Tests stub HID
-and exercise protocol encode/decode, hidapi path resolution, profile migrate,
-CLI argv, and the `status --json` schema.
-
 ```bash
-# from the repository root
 python3 elgato-control/tests/test_streamdeck.py
 python3 -m unittest discover -s elgato-control/tests -v
-nix flake check   # x86_64-linux only: same tests, luau-compile, wrapped CLI
+nix flake check   # x86_64-linux only: same tests, luau-compile, editor checks, wrapped CLI
 ```
 
-GitHub Actions runs those Python tests on `ubuntu-latest` (x86_64). Luau is
+GitHub Actions runs those Python tests on `ubuntu-latest` (`x86_64`). Luau is
 syntax-checked when `luau-compile` is on PATH, including `nix flake check` via
-nixpkgs. If Luau is missing, CI still fails on broken TOML/JSON fixtures. There
-are no Darwin jobs.
+nixpkgs. There are no Darwin jobs.
 
 ## Credits
 

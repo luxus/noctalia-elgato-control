@@ -97,6 +97,7 @@ KEY_ACTIONS = {
     "key_enter": "Return", "key_escape": "Escape", "key_space": "space", "key_tab": "Tab",
 }
 BUILTIN_ACTIONS = [
+    ("none", "Unassigned"),
     ("terminal", "Open Terminal"), ("browser", "Open Default Browser"), ("files", "Open Files"),
     ("launcher", "Open Launcher"), ("settings", "Open Settings"), ("control_center", "Control Center"),
     ("mic_mute", "Mute Microphone"), ("media_play_pause", "Play / Pause"), ("media_next", "Next Track"),
@@ -105,7 +106,7 @@ BUILTIN_ACTIONS = [
     ("workspace_prev", "Previous Workspace"), ("workspace_next", "Next Workspace"),
     ("overview", "Workspace Overview"), ("volume_down", "Volume Down"), ("volume_up", "Volume Up"),
     ("volume_mute", "Mute Output"), ("mic_down", "Microphone Down"), ("mic_up", "Microphone Up"),
-    ("notification_dnd", "Do Not Disturb"),
+    ("notification_dnd", "Do Not Disturb"), ("niri_close", "Close Window"),
     ("lights_toggle", "Toggle Key Lights"), ("lights_brightness_down", "Key Lights Dimmer"),
     ("lights_brightness_up", "Key Lights Brighter"), ("lights_warmer", "Key Lights Warmer"),
     ("lights_cooler", "Key Lights Cooler"), ("voxtype_push_to_talk", "VOXtype Push-to-talk"),
@@ -473,10 +474,44 @@ def save_profile(profile):
     os.replace(tmp, PROFILE)
 
 
+def xdg_data_dirs():
+    home = pathlib.Path.home()
+    ordered = []
+    data_home = os.environ.get("XDG_DATA_HOME")
+    ordered.append(pathlib.Path(data_home) if data_home else home / ".local/share")
+    data_dirs = os.environ.get("XDG_DATA_DIRS")
+    if data_dirs:
+        ordered.extend(pathlib.Path(part) for part in data_dirs.split(":") if part)
+    else:
+        ordered.extend([pathlib.Path("/usr/local/share"), pathlib.Path("/usr/share")])
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    ordered.extend([
+        pathlib.Path("/run/current-system/sw/share"),
+        home / ".nix-profile" / "share",
+        pathlib.Path("/etc/profiles/per-user") / user / "share" if user else None,
+        home / ".local/share",
+        pathlib.Path("/usr/share"),
+    ])
+    seen = set()
+    out = []
+    for directory in ordered:
+        if directory is None:
+            continue
+        key = str(directory)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(directory)
+    return out
+
+
+def application_dirs():
+    return [directory / "applications" for directory in xdg_data_dirs()]
+
+
 def desktop_applications():
     applications = {}
-    roots = [pathlib.Path("/usr/share/applications"), pathlib.Path.home() / ".local/share/applications"]
-    for directory in roots:
+    for directory in application_dirs():
         if not directory.is_dir():
             continue
         for path in directory.glob("*.desktop"):
@@ -502,7 +537,7 @@ def desktop_applications():
 def desktop_entry(desktop_id):
     if not re.fullmatch(r"[A-Za-z0-9_.+-]+", desktop_id):
         return {}
-    for directory in (pathlib.Path.home() / ".local/share/applications", pathlib.Path("/usr/share/applications")):
+    for directory in application_dirs():
         path = directory / (desktop_id + ".desktop")
         if not path.is_file():
             continue
@@ -528,11 +563,22 @@ def resolve_icon(icon):
     if direct.is_file():
         return str(direct)
     names = [icon] if pathlib.Path(icon).suffix.lower() in (".svg", ".png", ".xpm", ".jpg", ".jpeg") else [icon + extension for extension in (".svg", ".png", ".xpm")]
-    roots = [pathlib.Path.home() / ".local/share/icons", pathlib.Path("/usr/share/icons/hicolor"), pathlib.Path("/usr/share/pixmaps")]
+    roots = []
+    for directory in xdg_data_dirs():
+        roots.append(directory / "icons")
+        roots.append(directory / "pixmaps")
+    roots.extend([
+        pathlib.Path.home() / ".local/share/icons",
+        pathlib.Path("/usr/share/icons/hicolor"),
+        pathlib.Path("/usr/share/pixmaps"),
+    ])
     candidates = []
+    seen_roots = set()
     for root in roots:
-        if not root.is_dir():
+        key = str(root)
+        if key in seen_roots or not root.is_dir():
             continue
+        seen_roots.add(key)
         for name in names:
             candidates.extend(root.glob("**/" + name))
     if not candidates:
@@ -609,8 +655,7 @@ def rendered_key_image(action, label, spec):
 def desktop_file_exists(desktop_id):
     if not re.fullmatch(r"[A-Za-z0-9_.+-]+", desktop_id):
         return False
-    return any((directory / (desktop_id + ".desktop")).is_file() for directory in
-               (pathlib.Path("/usr/share/applications"), pathlib.Path.home() / ".local/share/applications"))
+    return any((directory / (desktop_id + ".desktop")).is_file() for directory in application_dirs())
 
 
 def valid_action(action):
@@ -672,10 +717,32 @@ def write_status(data):
     os.replace(tmp, STATUS)
 
 
+def search_path():
+    parts = [part for part in os.environ.get("PATH", "").split(":") if part]
+    extras = [
+        "/run/current-system/sw/bin",
+        str(pathlib.Path.home() / ".nix-profile" / "bin"),
+        "/usr/bin",
+        "/usr/local/bin",
+    ]
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    if user:
+        extras.insert(2, str(pathlib.Path("/etc/profiles/per-user") / user / "bin"))
+    seen = set()
+    out = []
+    for part in parts + extras:
+        if part and part not in seen:
+            seen.add(part)
+            out.append(part)
+    return ":".join(out)
+
+
 def which(*names):
+    path = search_path()
     for name in names:
-        if shutil.which(name):
-            return name
+        found = shutil.which(name, path=path)
+        if found:
+            return found
     return None
 
 
@@ -690,64 +757,88 @@ def compositor():
 
 
 def noctalia_msg(*parts):
-    if which("noctalia"):
-        return ["noctalia", "msg", *parts]
+    noctalia = which("noctalia")
+    if noctalia:
+        return [noctalia, "msg", *parts]
+    return None
+
+
+def niri_msg_action(*parts):
+    niri = which("niri")
+    if niri:
+        return [niri, "msg", "action", *parts]
     return None
 
 
 def command_for(action, wave=None):
     home = str(pathlib.Path.home())
     mic_target = str((wave or {}).get("sourceId", "@DEFAULT_AUDIO_SOURCE@"))
+    if action in ("none", ""):
+        return None
     if action in KEY_ACTIONS:
         wtype = which("wtype")
         return [wtype, "-k", KEY_ACTIONS[action]] if wtype else None
     if action.startswith("app:") and desktop_file_exists(action[4:]):
         launcher = which("gtk-launch", "gio")
-        if launcher == "gio":
-            return ["gio", "launch", desktop_entry(action[4:]).get("path", action[4:] + ".desktop")]
+        entry = desktop_entry(action[4:])
+        if launcher and pathlib.Path(launcher).name == "gio":
+            return [launcher, "launch", entry.get("path", action[4:] + ".desktop")]
         if launcher:
             return [launcher, action[4:]]
-        return ["xdg-open", desktop_entry(action[4:]).get("path", "")]
+        opener = which("xdg-open")
+        return [opener, entry.get("path", "")] if opener else None
     terminal = which("kitty", "ghostty", "foot", "alacritty", "wezterm", "konsole", "xdg-terminal-exec")
+    wpctl = which("wpctl") or "wpctl"
+    xdg_open = which("xdg-open")
+    loginctl = which("loginctl")
+    playerctl = which("playerctl")
+    grim = which("grim")
+    hyprctl = which("hyprctl")
+    qdbus = which("qdbus6", "qdbus")
+    voxtype = which("voxtype")
     comp = compositor()
-    workspace = {
-        "niri": {
-            "workspace_next": ["niri", "msg", "action", "focus-workspace-down"],
-            "workspace_prev": ["niri", "msg", "action", "focus-workspace-up"],
-            "overview": ["niri", "msg", "action", "toggle-overview"],
-        },
-        "hyprland": {
-            "workspace_next": ["hyprctl", "dispatch", "workspace", "+1"],
-            "workspace_prev": ["hyprctl", "dispatch", "workspace", "-1"],
-            "overview": ["hyprctl", "dispatch", "hyprexpo:expo", "toggle"],
-        },
-        "kwin": {
-            "workspace_next": ["qdbus", "org.kde.KWin", "/KWin", "nextDesktop"],
-            "workspace_prev": ["qdbus", "org.kde.KWin", "/KWin", "previousDesktop"],
-            "overview": ["qdbus", "org.kde.kglobalaccel", "/component/kwin", "org.kde.kglobalaccel.Component.invokeShortcut", "ExposeAll"],
-        },
-    }.get(comp, {})
+    workspace = {}
+    if comp == "niri":
+        workspace = {
+            "workspace_next": niri_msg_action("focus-workspace-down"),
+            "workspace_prev": niri_msg_action("focus-workspace-up"),
+            "overview": niri_msg_action("toggle-overview"),
+        }
+    elif comp == "hyprland" and hyprctl:
+        workspace = {
+            "workspace_next": [hyprctl, "dispatch", "workspace", "+1"],
+            "workspace_prev": [hyprctl, "dispatch", "workspace", "-1"],
+            "overview": [hyprctl, "dispatch", "hyprexpo:expo", "toggle"],
+        }
+    elif comp == "kwin" and qdbus:
+        workspace = {
+            "workspace_next": [qdbus, "org.kde.KWin", "/KWin", "nextDesktop"],
+            "workspace_prev": [qdbus, "org.kde.KWin", "/KWin", "previousDesktop"],
+            "overview": [qdbus, "org.kde.kglobalaccel", "/component/kwin", "org.kde.kglobalaccel.Component.invokeShortcut", "ExposeAll"],
+        }
     mapping = {
+        "none": None,
         "terminal": [terminal] if terminal else None,
-        "browser": ["xdg-open", "https://"],
-        "files": ["xdg-open", home],
+        "browser": [xdg_open, "https://"] if xdg_open else None,
+        "files": [xdg_open, home] if xdg_open else None,
         "launcher": noctalia_msg("panel-toggle", "launcher"),
         "settings": noctalia_msg("settings-toggle"),
         "control_center": noctalia_msg("panel-toggle", "control-center"),
-        "mic_mute": ["wpctl", "set-mute", mic_target, "toggle"],
-        "mic_up": ["wpctl", "set-volume", mic_target, "5%+"],
-        "mic_down": ["wpctl", "set-volume", mic_target, "5%-"],
-        "volume_mute": noctalia_msg("volume-mute") or ["wpctl", "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
-        "volume_up": noctalia_msg("volume-up") or ["wpctl", "set-volume", "-l", "1.5", "@DEFAULT_AUDIO_SINK@", "5%+"],
-        "volume_down": noctalia_msg("volume-down") or ["wpctl", "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"],
-        "media_play_pause": noctalia_msg("media", "toggle") or (["playerctl", "play-pause"] if which("playerctl") else None),
-        "media_next": noctalia_msg("media", "next") or (["playerctl", "next"] if which("playerctl") else None),
-        "media_prev": noctalia_msg("media", "previous") or (["playerctl", "previous"] if which("playerctl") else None),
-        "screenshot": noctalia_msg("screenshot-region") or (["grim"] if which("grim") else None),
-        "screenshot_fullscreen": noctalia_msg("screenshot-fullscreen") or (["grim"] if which("grim") else None),
-        "lock": noctalia_msg("lock") or (["loginctl", "lock-session"] if which("loginctl") else None),
+        "mic_mute": [wpctl, "set-mute", mic_target, "toggle"],
+        "mic_up": [wpctl, "set-volume", mic_target, "5%+"],
+        "mic_down": [wpctl, "set-volume", mic_target, "5%-"],
+        "volume_mute": noctalia_msg("volume-mute") or [wpctl, "set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
+        "volume_up": noctalia_msg("volume-up") or [wpctl, "set-volume", "-l", "1.5", "@DEFAULT_AUDIO_SINK@", "5%+"],
+        "volume_down": noctalia_msg("volume-down") or [wpctl, "set-volume", "@DEFAULT_AUDIO_SINK@", "5%-"],
+        "media_play_pause": noctalia_msg("media", "toggle") or ([playerctl, "play-pause"] if playerctl else None),
+        "media_next": noctalia_msg("media", "next") or ([playerctl, "next"] if playerctl else None),
+        "media_prev": noctalia_msg("media", "previous") or ([playerctl, "previous"] if playerctl else None),
+        "screenshot": noctalia_msg("screenshot-region") or ([grim] if grim else None),
+        "screenshot_fullscreen": noctalia_msg("screenshot-fullscreen") or ([grim] if grim else None),
+        "lock": noctalia_msg("session", "lock") or ([loginctl, "lock-session"] if loginctl else None),
         "notification_dnd": noctalia_msg("notification-dnd-toggle"),
-        "voxtype_push_to_talk": ["voxtype", "record", "start"] if which("voxtype") else None,
+        "niri_close": niri_msg_action("close-window"),
+        "voxtype_push_to_talk": [voxtype, "record", "start"] if voxtype else None,
         "workspace_next": workspace.get("workspace_next"),
         "workspace_prev": workspace.get("workspace_prev"),
         "overview": workspace.get("overview"),
@@ -756,16 +847,18 @@ def command_for(action, wave=None):
 
 
 def release_command_for(action):
-    if action == "voxtype_push_to_talk" and which("voxtype"):
-        return ["voxtype", "record", "stop"]
+    voxtype = which("voxtype")
+    if action == "voxtype_push_to_talk" and voxtype:
+        return [voxtype, "record", "stop"]
     return None
 
 
 def detect_wave():
-    if not which("wpctl"):
+    wpctl = which("wpctl")
+    if not wpctl:
         return None
     try:
-        result = subprocess.run(["wpctl", "status"], check=False, capture_output=True, text=True, timeout=2)
+        result = subprocess.run([wpctl, "status"], check=False, capture_output=True, text=True, timeout=2)
     except (OSError, subprocess.TimeoutExpired):
         return None
     names, source_id, sink_id, section = [], None, None, ""
@@ -1061,7 +1154,7 @@ class Daemon:
         self.status["devices"] = devices
 
     def act(self, action):
-        if not action:
+        if not action or action == "none":
             return
         if action.startswith("wave_"):
             try:
