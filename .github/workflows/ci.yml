@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (ubuntu-latest x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python tests
+        run: |
+          python3 -m unittest discover -s elgato-control/tests -v
+          python3 elgato-control/tests/test_streamdeck.py
+      - name: Luau syntax (optional toolchain)
+        run: |
+          if command -v luau-compile >/dev/null; then
+            for f in elgato-control/*.luau; do
+              luau-compile --binary "$f" >/dev/null
+            done
+          else
+            echo "luau-compile is not installed on ubuntu-latest."
+            echo "TOML/JSON fixtures still fail this job if broken."
+            echo "nix flake check compiles .luau files with nixpkgs.luau."
+            echo "No Noctalia runtime, Stream Deck, or Key Light is required in CI."
+          fi
+
+  flake:
+    name: nix flake check (x86_64-linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            extra-experimental-features = nix-command flakes
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: nix flake check
+        run: nix flake check -L --no-update-lock-file
