@@ -33,7 +33,10 @@ end
 
 function editor.shortLabel(item)
 	local label = editor.displayLabel(item)
-	return (label:gsub("^(Function|Application|Key) · ", ""))
+	label = label:gsub("^Function · ", "")
+	label = label:gsub("^Application · ", "")
+	label = label:gsub("^Key · ", "")
+	return label
 end
 
 function editor.normalizeCatalog(catalog)
