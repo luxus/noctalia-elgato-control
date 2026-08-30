@@ -1,6 +1,6 @@
 id = "luxus/elgato-control"
 name = "Elgato Control"
-version = "1.0.0"
+version = "1.1.0"
 plugin_api = 24
 author = "luxus"
 license = "MIT"
@@ -40,11 +40,12 @@ entry = "widget.luau"
 [[panel]]
 id = "panel"
 entry = "panel.luau"
-width = 760
-height = 640
+width = 860
+height = 680
 placement = "floating"
 position = "center"
 open_near_click = true
+keyboard_focus = "exclusive"
 
 [[service]]
 id = "service"

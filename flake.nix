@@ -11,7 +11,7 @@
       python = pkgs.python3;
       elgato-control = pkgs.stdenvNoCC.mkDerivation {
         pname = "elgato-control";
-        version = "1.0.0";
+        version = "1.1.0";
         src = ./elgato-control;
         nativeBuildInputs = [ pkgs.makeWrapper ];
         dontBuild = true;
@@ -62,6 +62,16 @@
         for f in elgato-control/*.luau; do
           luau-compile --binary "$f" >/dev/null
         done
+        python3 -c '
+from pathlib import Path
+mod = Path("elgato-control/editor.luau").read_text()
+if not mod.rstrip().endswith("return editor"):
+    raise SystemExit("editor.luau must end with return editor")
+mod = mod.rstrip()[:-len("return editor")].rstrip() + "\n"
+tests = Path("elgato-control/tests/test_editor.luau").read_text()
+Path("editor-check.luau").write_text(mod + "\n" + tests)
+'
+        luau editor-check.luau
         export XDG_CONFIG_HOME="$PWD/tmp-xdg/config"
         export XDG_STATE_HOME="$PWD/tmp-xdg/state"
         export XDG_CACHE_HOME="$PWD/tmp-xdg/cache"

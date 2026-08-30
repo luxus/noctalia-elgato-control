@@ -176,6 +176,8 @@ class CliTests(unittest.TestCase):
         self.assertEqual(15, len(parsed_profile["classicKeys"]))
         self.assertTrue(any(item["value"] == "lock" for item in parsed_catalog))
         self.assertTrue(any(item["value"] == "key_home" for item in parsed_catalog))
+        self.assertTrue(any(item["value"] == "niri_close" for item in parsed_catalog))
+        self.assertTrue(any(item["value"] == "none" for item in parsed_catalog))
 
 
 if __name__ == "__main__":

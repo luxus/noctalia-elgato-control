@@ -9,9 +9,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 PLUGIN = ROOT / "elgato-control"
 LUAU_FILES = {
     "widget.luau": ("update", "onClick"),
-    "panel.luau": ("render", "onOpen", "update"),
+    "panel.luau": ("onOpen", "onClose", "update"),
     "service.luau": ("onEnable", "update"),
     "shortcut.luau": ("onClick",),
+    "editor.luau": (),
 }
 
 
@@ -26,6 +27,8 @@ class FixtureTests(unittest.TestCase):
         entry = catalog["plugin"][0]
         for key in ("id", "name", "version", "plugin_api", "author"):
             self.assertEqual(plugin[key], entry[key], key)
+        self.assertEqual("1.1.0", plugin["version"])
+        self.assertEqual("exclusive", plugin["panel"][0].get("keyboard_focus"))
         self.assertEqual("widget.luau", plugin["widget"][0]["entry"])
         self.assertEqual("panel.luau", plugin["panel"][0]["entry"])
         self.assertEqual("service.luau", plugin["service"][0]["entry"])
@@ -68,6 +71,14 @@ class FixtureTests(unittest.TestCase):
         self.assertIn("ELGATO_HIDAPI", plugin_readme)
         self.assertIn("nix flake check", plugin_readme)
 
+    def test_changelog_and_release_docs_exist(self):
+        changelog = (ROOT / "CHANGELOG.md").read_text()
+        self.assertIn("1.1.0", changelog)
+        self.assertIn("black", changelog.lower())
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn("visual editor", readme.lower())
+        self.assertIn("v1.1.0", readme)
+
     def test_luau_entrypoints_exist_and_are_not_qml(self):
         service = (PLUGIN / "service.luau").read_text()
         self.assertIn("ELGATO_HIDAPI", service)
@@ -79,6 +90,16 @@ class FixtureTests(unittest.TestCase):
             self.assertNotIn("import Qt", text)
             for function in functions:
                 self.assertIn("function %s(" % function, text, "%s %s" % (name, function))
+        panel = (PLUGIN / "panel.luau").read_text()
+        self.assertIn('require("./editor.luau")', panel)
+        self.assertIn("noctalia.runAsync(", panel)
+        self.assertIn("{ helper,", panel)
+        self.assertNotIn("ui.select", panel)
+        self.assertNotIn("ui.box({", panel)
+        self.assertIn("function onClose(", panel)
+        editor = (PLUGIN / "editor.luau").read_text()
+        self.assertIn("function editor.saveArgv", editor)
+        self.assertIn("function editor.filterCatalog", editor)
 
     def test_luau_syntax_when_compiler_is_available(self):
         compiler = shutil.which("luau-compile")

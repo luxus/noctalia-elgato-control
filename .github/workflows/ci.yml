@@ -33,6 +33,9 @@ jobs:
             echo "nix flake check compiles .luau files with nixpkgs.luau."
             echo "No Noctalia runtime, Stream Deck, or Key Light is required in CI."
           fi
+          if command -v luau >/dev/null; then
+            luau elgato-control/tests/test_editor.luau
+          fi
 
   flake:
     name: nix flake check (x86_64-linux)

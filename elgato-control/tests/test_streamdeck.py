@@ -51,7 +51,10 @@ class DeviceModelTests(unittest.TestCase):
 
     def test_wave_actions_target_detected_source(self):
         command = module.command_for("mic_mute", {"sourceId": 89})
-        self.assertEqual(["wpctl", "set-mute", "89", "toggle"], command)
+        self.assertEqual("set-mute", command[1])
+        self.assertEqual("89", command[2])
+        self.assertEqual("toggle", command[3])
+        self.assertTrue(str(command[0]).endswith("wpctl"))
 
     def test_mic_actions_fall_back_to_default_source(self):
         command = module.command_for("mic_up")
@@ -62,6 +65,7 @@ class DeviceModelTests(unittest.TestCase):
             self.assertEqual(["noctalia", "msg", "media", "toggle"], module.command_for("media_play_pause"))
             self.assertEqual(["noctalia", "msg", "screenshot-region"], module.command_for("screenshot"))
             self.assertEqual(["noctalia", "msg", "panel-toggle", "launcher"], module.command_for("launcher"))
+            self.assertEqual(["noctalia", "msg", "session", "lock"], module.command_for("lock"))
 
     def test_home_key_action_uses_wtype_without_a_shell(self):
         with mock.patch.object(module, "which", return_value="wtype"):
