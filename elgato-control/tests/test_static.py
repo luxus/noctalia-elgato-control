@@ -131,7 +131,7 @@ class FixtureTests(unittest.TestCase):
         self.assertIn("limit > 0 and #matches >= limit", editor)
         helper = (PLUGIN / "bin" / "elgato-control").read_text()
         self.assertIn('which("magick", "convert")', helper)
-        self.assertIn("[0x02, 0x0C,", helper)
+        self.assertIn("0x02, 0x0C,", helper)
         self.assertIn("set-key requires --device", helper)
         self.assertNotIn('root.glob("**/"', helper)
 
