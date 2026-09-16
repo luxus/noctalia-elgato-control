@@ -665,6 +665,15 @@ Audio
             module.perform_wave_action(wave, "wave_mute")
         adjust.assert_called_once_with(57, mute=True)
 
+    def test_wave_xlr_skips_mic_capture_even_when_card_is_set(self):
+        wave = {"model": "wave_xlr", "sourceId": 57, "sinkId": 56, "card": 3, "gainRaw": 40}
+        with mock.patch.object(module, "wpctl_adjust") as adjust, \
+             mock.patch.object(module, "set_alsa_control") as setter:
+            module.perform_wave_action(wave, "wave_mute")
+            module.perform_wave_action(wave, "wave_gain_up")
+        setter.assert_not_called()
+        self.assertEqual([mock.call(57, mute=True), mock.call(57, delta=5)], adjust.call_args_list)
+
     def test_hidapi_sibling_swaps_hidraw_and_libusb(self):
         self.assertTrue(module.hidapi_sibling("/nix/store/x/lib/libhidapi-hidraw.so.0").endswith("libhidapi-libusb.so.0"))
 
