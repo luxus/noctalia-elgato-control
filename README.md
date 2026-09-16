@@ -19,7 +19,7 @@ Add the bar widget in Noctalia settings. Click it (or the Elgato shortcut) to op
 
 ### udev
 
-The plugin talks to Stream Deck hidraw nodes. Import this flake’s NixOS module (udev rules only):
+The plugin talks to Stream Deck hidraw nodes. Import this flake’s NixOS module (`services.udev.packages`, not `extraRules` — `uaccess` must load before `73-seat-late.rules`):
 
 ```nix
 {
@@ -37,7 +37,7 @@ The plugin talks to Stream Deck hidraw nodes. Import this flake’s NixOS module
 }
 ```
 
-Or copy `elgato-control/udev/99-elgato-streamdeck.rules` into `/etc/udev/rules.d/`, then:
+Or copy `elgato-control/udev/70-elgato-streamdeck.rules` into `/etc/udev/rules.d/` (keep the `70-` prefix so `uaccess` runs before systemd `73-seat-late.rules`), then:
 
 ```bash
 sudo udevadm control --reload-rules
@@ -53,7 +53,7 @@ If ctypes cannot find hidapi, set the plugin setting **hidapi library path** to 
 ## Visual editor
 
 1. Click the bar widget. You should see **Elgato Control**, device tabs, a key preview, and an **Action inspector**.
-2. Tabs appear from hardware: Stream Deck (15-key), Stream Deck + (only with LCD/dials when a Plus is present), Pedal, Wave:3, Key Lights. If nothing is plugged in you still get classic + Plus so you can edit the profile.
+2. Tabs appear from hardware: Stream Deck (15-key), Stream Deck + (LCD/dials when a Plus is present), Pedal, Wave:3 / Wave XLR, Key Lights. Classic and Plus stay open together. If nothing is plugged in you still get classic + Plus so you can edit the profile.
 3. Click a key, dial, or pedal on the preview.
 4. Filter the action list if you want, then click an action. It is written immediately (`set-key` / `set-dial` / `set-pedal`). There is no JSON-only editor in the panel.
 5. Press the physical key. It should run that mapping (niri workspace / close window, `noctalia msg` launcher / lock / volume / media / screenshot, or a `.desktop` app from NixOS `XDG_DATA_DIRS`).

@@ -23,6 +23,7 @@
           makeWrapper ${python}/bin/python3 $out/bin/elgato-control \
             --add-flags "$out/share/elgato-control/bin/elgato-control" \
             --set ELGATO_HIDAPI ${hidapiLib} \
+            --prefix LD_LIBRARY_PATH : ${pkgs.hidapi}/lib \
             --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.imagemagick ]}
           runHook postInstall
         '';
@@ -35,8 +36,16 @@
         };
       };
     in {
-      nixosModules.default = { ... }: {
-        services.udev.extraRules = builtins.readFile ./elgato-control/udev/99-elgato-streamdeck.rules;
+      nixosModules.default = { pkgs, ... }: {
+        # 70-*.rules via udev.packages: TAG+="uaccess" must run before 73-seat-late.
+        # extraRules lands in 99-local.rules and would not grant hidraw access.
+        services.udev.packages = [
+          (pkgs.writeTextFile {
+            name = "70-elgato-streamdeck";
+            destination = "/etc/udev/rules.d/70-elgato-streamdeck.rules";
+            text = builtins.readFile ./elgato-control/udev/70-elgato-streamdeck.rules;
+          })
+        ];
       };
 
       packages.${system} = {

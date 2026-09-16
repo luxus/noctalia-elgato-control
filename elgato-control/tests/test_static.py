@@ -54,10 +54,19 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual("launcher", profile["classicKeys"][14]["action"])
 
     def test_udev_rules_cover_elgato_vid(self):
-        rules = (PLUGIN / "udev" / "99-elgato-streamdeck.rules").read_text()
+        rules_path = PLUGIN / "udev" / "70-elgato-streamdeck.rules"
+        self.assertTrue(rules_path.is_file())
+        self.assertFalse((PLUGIN / "udev" / "99-elgato-streamdeck.rules").exists())
+        rules = rules_path.read_text()
         self.assertIn('ATTRS{idVendor}=="0fd9"', rules)
         self.assertIn('KERNEL=="hidraw*"', rules)
+        self.assertIn('SUBSYSTEM=="hidraw"', rules)
         self.assertIn("uaccess", rules)
+        flake = (ROOT / "flake.nix").read_text()
+        self.assertIn("udev.packages", flake)
+        self.assertIn("70-elgato-streamdeck.rules", flake)
+        self.assertNotIn("99-elgato-streamdeck.rules", flake)
+        self.assertNotIn("services.udev.extraRules", flake)
 
     def test_readme_paths_match_the_tree(self):
         for path in (ROOT / "README.md", PLUGIN / "README.md"):
@@ -70,6 +79,15 @@ class FixtureTests(unittest.TestCase):
         self.assertIn("x86_64-linux", plugin_readme)
         self.assertIn("ELGATO_HIDAPI", plugin_readme)
         self.assertIn("nix flake check", plugin_readme)
+        self.assertIn("Wave XLR", plugin_readme)
+        self.assertIn("0x0084", plugin_readme)
+        self.assertIn("0x0086", plugin_readme)
+        self.assertIn("_elg._tcp", plugin_readme)
+        self.assertIn("0x007d", plugin_readme)
+        self.assertNotIn("OpenDeck", plugin_readme)
+        root_readme = (ROOT / "README.md").read_text()
+        self.assertIn("70-elgato-streamdeck.rules", root_readme)
+        self.assertIn("udev.packages", root_readme)
 
     def test_changelog_and_release_docs_exist(self):
         changelog = (ROOT / "CHANGELOG.md").read_text()

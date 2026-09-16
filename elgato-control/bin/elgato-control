@@ -2,7 +2,7 @@
 """HID daemon for Elgato Stream Deck hardware on Noctalia v5."""
 from __future__ import annotations
 
-import argparse, ctypes, hashlib, ipaddress, json, os, pathlib, re, shutil, signal, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import argparse, ctypes, ctypes.util, hashlib, ipaddress, json, os, pathlib, re, shutil, signal, socket, struct, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 VID = 0x0FD9
 PLUS, PEDAL = 0x0084, 0x0086
@@ -158,6 +158,144 @@ def origin_index(key, cols=5):
     return (key - col) + ((cols - 1) - col)
 
 
+def brightness_feature(spec, value):
+    value = max(0, min(100, int(value)))
+    if spec.get("family") == "original":
+        return [0x05, 0x55, 0xAA, 0xD1, 0x01, value], int(spec.get("feature_len", 17))
+    return [0x03, 0x08, value], int(spec.get("feature_len", 32))
+
+
+def jpeg_key_header(key_index, page, chunk_len, final):
+    return [
+        0x02, 0x07, int(key_index), 1 if final else 0,
+        chunk_len & 255, chunk_len >> 8, page & 255, page >> 8,
+    ]
+
+
+def original_bmp_header(page, hardware_index, final):
+    return [0x02, 0x01, page + 1, 0, 1 if final else 0, hardware_index + 1] + [0] * 10
+
+
+def plus_lcd_header(page, chunk_len, final, x=0, y=0, width=800, height=100):
+    """Stream Deck + partial-window JPEG (official HID 0x02/0x0C, 16-byte header)."""
+    return [
+        0x02, 0x0C,
+        x & 255, x >> 8,
+        y & 255, y >> 8,
+        width & 255, width >> 8,
+        height & 255, height >> 8,
+        1 if final else 0,
+        page & 255, page >> 8,
+        chunk_len & 255, chunk_len >> 8,
+        0,
+    ]
+
+
+def pad_hid_report(header, payload, report):
+    data = list(header) + list(payload)
+    if len(data) > report:
+        return data[:report]
+    return data + [0] * (report - len(data))
+
+
+def blank_bmp(size=72):
+    row = size * 3
+    pad = (4 - (row % 4)) % 4
+    pixel = (row + pad) * size
+    header = struct.pack("<2sIHHI", b"BM", 54 + pixel, 0, 0, 54)
+    dib = struct.pack("<IiiHHIIiiII", 40, size, size, 1, 24, 0, pixel, 2835, 2835, 0, 0)
+    return header + dib + bytes(pixel)
+
+
+def blank_key_image(spec):
+    size = int(spec.get("key_px", 72) or 72)
+    if spec.get("image") == "bmp":
+        return blank_bmp(size)
+    return BLANK_JPEG
+
+
+# Minimal valid 1×1 JPEG (SOI…EOI). Used when ImageMagick is missing so a write still happens.
+BLANK_JPEG = bytes.fromhex(
+    "ffd8ffe000104a46494600010100000100010000ffdb004300"
+    "0101010101010101010101010101010101010101010101010101010101010101"
+    "01010101010101010101010101010101010101010101010101ffc0000b080001"
+    "000101011100ffc40014100100000000000000000000000000000000ffda0008"
+    "010100003f007fd9"
+)
+
+
+WAVE_ALSA_GAIN = ("Mic Capture Volume", "Capture Volume", "PCM Capture Volume")
+WAVE_ALSA_MUTE = ("Mic Capture Switch", "Capture Switch")
+WAVE_ALSA_HEADPHONE = ("PCM Playback Volume", "Headphone Playback Volume")
+WAVE_ALSA_HEADPHONE_MUTE = ("PCM Playback Switch", "Headphone Playback Switch")
+
+
+def hid_interface_rank(interface_number):
+    try:
+        iface = int(interface_number)
+    except (TypeError, ValueError):
+        return 1
+    if iface in (0, -1):
+        return 0
+    return 1 + max(0, iface)
+
+
+def decode_hid_string(value):
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+def group_hid_devices(entries):
+    """One row per (productId, serial). Classic and Plus stay separate. Prefer interface 0."""
+    best, order = {}, []
+    for entry in entries:
+        key = (entry["productId"], entry.get("serial") or "")
+        if key not in best:
+            row = dict(entry)
+            row.setdefault("alternates", [])
+            best[key] = row
+            order.append(key)
+            continue
+        current = best[key]
+        new_rank = hid_interface_rank(entry.get("interface", -1))
+        old_rank = hid_interface_rank(current.get("interface", -1))
+        if new_rank < old_rank:
+            row = dict(entry)
+            row["alternates"] = list(current.get("alternates") or []) + [current["path"]]
+            best[key] = row
+        else:
+            current.setdefault("alternates", []).append(entry["path"])
+    return [best[key] for key in order]
+
+
+def hidapi_sibling(path):
+    name = pathlib.Path(path).name
+    parent = pathlib.Path(path).parent
+    if "hidraw" in name:
+        return str(parent / name.replace("hidraw", "libusb"))
+    if "libusb" in name:
+        return str(parent / name.replace("libusb", "hidraw"))
+    return ""
+
+
+def hidapi_search_dirs():
+    home = pathlib.Path.home()
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    dirs = [
+        pathlib.Path("/run/current-system/sw/lib"),
+        home / ".nix-profile" / "lib",
+        pathlib.Path("/etc/profiles/per-user") / user / "lib" if user else None,
+        pathlib.Path("/usr/lib"),
+        pathlib.Path("/usr/lib64"),
+        pathlib.Path("/usr/lib/x86_64-linux-gnu"),
+        pathlib.Path("/usr/lib/aarch64-linux-gnu"),
+    ]
+    return [path for path in dirs if path is not None]
+
+
 class DeviceInfo(ctypes.Structure):
     pass
 
@@ -174,26 +312,42 @@ DeviceInfo._fields_ = [
 
 def hidapi_candidates():
     extra = os.environ.get("ELGATO_HIDAPI") or os.environ.get("HIDAPI_PATH")
-    names = [
-        extra,
+    names = []
+
+    def add(name):
+        if name and name not in names:
+            names.append(name)
+
+    add(extra)
+    if extra:
+        add(hidapi_sibling(extra))
+    for lib in ("hidapi-hidraw", "hidapi-libusb", "hidapi"):
+        try:
+            add(ctypes.util.find_library(lib))
+        except (OSError, AttributeError, ValueError):
+            continue
+    for soname in (
         "libhidapi-hidraw.so.0", "libhidapi-hidraw.so",
+        "libhidapi-libusb.so.0", "libhidapi-libusb.so",
         "libhidapi.so.0", "libhidapi.so",
-        "/run/current-system/sw/lib/libhidapi-hidraw.so.0",
-        "/usr/lib/libhidapi-hidraw.so.0",
-        "/usr/lib64/libhidapi-hidraw.so.0",
-        "/usr/lib/x86_64-linux-gnu/libhidapi-hidraw.so.0",
-        "/usr/lib/aarch64-linux-gnu/libhidapi-hidraw.so.0",
-    ]
-    return [n for n in names if n]
+    ):
+        add(soname)
+    for directory in hidapi_search_dirs():
+        add(str(directory / "libhidapi-hidraw.so.0"))
+        add(str(directory / "libhidapi-libusb.so.0"))
+        add(str(directory / "libhidapi.so.0"))
+    return names
 
 
 class Hid:
     def __init__(self):
         self.lib = None
+        self.backend = None
         last_error = None
         for name in hidapi_candidates():
             try:
                 self.lib = ctypes.CDLL(name)
+                self.backend = name
                 break
             except OSError as error:
                 last_error = error
@@ -209,39 +363,63 @@ class Hid:
         self.lib.hid_send_feature_report.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_size_t]
         self.lib.hid_write.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_size_t]
         self.lib.hid_close.argtypes = [ctypes.c_void_p]
+        try:
+            self.lib.hid_error.argtypes = [ctypes.c_void_p]
+            self.lib.hid_error.restype = ctypes.c_wchar_p
+        except Exception:
+            pass
         self.lib.hid_init()
 
+    def last_error(self, handle=None):
+        fn = getattr(self.lib, "hid_error", None)
+        if not fn:
+            return ""
+        try:
+            message = fn(handle)
+        except OSError:
+            return ""
+        return message or ""
+
     def paths(self):
-        out, seen, head = [], set(), self.lib.hid_enumerate(VID, 0)
-        cur = head
-        while cur:
-            i = cur.contents
-            spec = DEVICE_SPECS.get(i.product_id)
-            if spec:
-                serial = i.serial_number or ""
-                key = (i.product_id, serial)
-                if key not in seen:
-                    seen.add(key)
-                    out.append({
-                        "path": i.path.decode(),
-                        "productId": i.product_id,
-                        "serial": serial,
-                        "product": i.product_string or spec["name"],
+        head = self.lib.hid_enumerate(VID, 0)
+        try:
+            entries = []
+            cur = head
+            while cur:
+                info = cur.contents
+                spec = DEVICE_SPECS.get(info.product_id)
+                path = decode_hid_string(info.path)
+                if spec and path:
+                    entries.append({
+                        "path": path,
+                        "productId": info.product_id,
+                        "serial": decode_hid_string(info.serial_number),
+                        "product": decode_hid_string(info.product_string) or spec["name"],
                         "kind": spec["kind"],
                         "family": spec.get("family", spec["kind"]),
                         "capabilities": spec["capabilities"],
                         "spec": spec,
+                        "interface": int(info.interface_number),
                     })
-            cur = i.next
-        if head:
-            self.lib.hid_free_enumeration(head)
-        return out
+                cur = info.next
+            return group_hid_devices(entries)
+        finally:
+            if head:
+                self.lib.hid_free_enumeration(head)
 
     def open(self, path):
-        dev = self.lib.hid_open_path(path.encode())
-        if dev:
-            self.lib.hid_set_nonblocking(dev, 1)
-        return dev
+        if not path:
+            return None
+        encoded = path if isinstance(path, bytes) else path.encode()
+        handle = self.lib.hid_open_path(encoded)
+        if not handle:
+            return None
+        self.lib.hid_set_nonblocking(handle, 1)
+        return handle
+
+    def close(self, handle):
+        if handle:
+            self.lib.hid_close(handle)
 
     def read(self, dev):
         buf = (ctypes.c_ubyte * 1024)()
@@ -249,7 +427,8 @@ class Hid:
         return bytes(buf[:n]) if n > 0 else b""
 
     def feature(self, dev, values, length=32):
-        values = list(values) + [0] * (length - len(values))
+        values = list(values)[:length]
+        values += [0] * (length - len(values))
         buf = (ctypes.c_ubyte * len(values))(*values)
         return self.lib.hid_send_feature_report(dev, buf, len(values))
 
@@ -853,6 +1032,69 @@ def release_command_for(action):
     return None
 
 
+def wave_name_compact(name):
+    return re.sub(r"[\s:_-]+", "", str(name).lower())
+
+
+def is_wave_node(name):
+    compact = wave_name_compact(name)
+    if "monitorof" in compact:
+        return False
+    return "elgatowave" in compact or "wavexlr" in compact or "wave3" in compact
+
+
+def wave_model(name):
+    compact = wave_name_compact(name)
+    if "xlr" in compact:
+        return "wave_xlr"
+    if "wave3" in compact:
+        return "wave3"
+    return "wave"
+
+
+def parse_wpctl_wave(text):
+    """Pick Wave:3 / Wave XLR source+sink from `wpctl status`. Skip monitor nodes."""
+    names, source_id, sink_id, section = [], None, None, ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if "Sinks:" in stripped and stripped.endswith("Sinks:"):
+            section = "sinks"
+            continue
+        if "Sources:" in stripped and stripped.endswith("Sources:"):
+            section = "sources"
+            continue
+        if "Filters:" in stripped or "Streams:" in stripped or stripped.startswith("Video") or stripped.startswith("Settings"):
+            section = ""
+            continue
+        if "monitor of" in line.lower() or not is_wave_node(line):
+            continue
+        if ". " not in line:
+            continue
+        name = line.split(". ", 1)[-1].split(" [", 1)[0].strip()
+        if name and name not in names:
+            names.append(name)
+        try:
+            node_id = int(line.split(".", 1)[0].split()[-1])
+        except (ValueError, IndexError):
+            node_id = None
+        if section == "sources" and node_id is not None:
+            source_id = node_id
+        if section == "sinks" and node_id is not None:
+            sink_id = node_id
+    if not names:
+        return None
+    product = names[0]
+    return {
+        "product": product,
+        "model": wave_model(product),
+        "kind": "microphone",
+        "capabilities": ["microphone", "mute", "gain", "headphones", "presets"],
+        "connected": True,
+        "sourceId": source_id,
+        "sinkId": sink_id,
+    }
+
+
 def detect_wave():
     wpctl = which("wpctl")
     if not wpctl:
@@ -861,41 +1103,30 @@ def detect_wave():
         result = subprocess.run([wpctl, "status"], check=False, capture_output=True, text=True, timeout=2)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    names, source_id, sink_id, section = [], None, None, ""
-    for line in result.stdout.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("├─ Sinks:") or stripped.startswith("├─ Sources:"):
-            section = "sinks" if "Sinks" in stripped else "sources"
-        if "Elgato Wave" in line:
-            name = line.split(". ", 1)[-1].split(" [", 1)[0].strip()
-            if name and name not in names:
-                names.append(name)
-            try:
-                node_id = int(line.split(".", 1)[0].split()[-1])
-            except (ValueError, IndexError):
-                node_id = None
-            if section == "sources" and node_id is not None:
-                source_id = node_id
-            if section == "sinks" and node_id is not None:
-                sink_id = node_id
-    if not names:
+    wave = parse_wpctl_wave(result.stdout or "")
+    if not wave:
         return None
     card = None
-    if source_id is not None:
+    if wave.get("sourceId") is not None:
         try:
-            inspect = subprocess.run(["wpctl", "inspect", str(source_id)], capture_output=True, text=True, timeout=2).stdout
+            inspect = subprocess.run([wpctl, "inspect", str(wave["sourceId"])], capture_output=True, text=True, timeout=2).stdout
             match = re.search(r'alsa\.card\s*=\s*"?(\d+)', inspect)
             if match:
                 card = int(match.group(1))
         except (OSError, subprocess.TimeoutExpired):
             pass
-    wave = {
-        "product": names[0], "kind": "microphone",
-        "capabilities": ["microphone", "mute", "gain", "headphones", "presets"],
-        "connected": True, "sourceId": source_id, "sinkId": sink_id, "card": card,
-    }
+    wave["card"] = card
     wave.update(read_wave_controls(card))
     return wave
+
+
+def first_alsa_control(card, names):
+    for name in names:
+        value = read_alsa_control(card, name)
+        if value:
+            value["name"] = name
+            return value
+    return None
 
 
 def read_alsa_control(card, name):
@@ -921,58 +1152,123 @@ def read_alsa_control(card, name):
 
 
 def read_wave_controls(card):
-    gain = read_alsa_control(card, "Mic Capture Volume") or {}
-    mic_switch = read_alsa_control(card, "Mic Capture Switch") or {}
-    headphones = read_alsa_control(card, "PCM Playback Volume") or {}
-    headphone_switch = read_alsa_control(card, "PCM Playback Switch") or {}
+    gain = first_alsa_control(card, WAVE_ALSA_GAIN) or {}
+    mic_switch = first_alsa_control(card, WAVE_ALSA_MUTE) or {}
+    headphones = first_alsa_control(card, WAVE_ALSA_HEADPHONE) or {}
+    headphone_switch = first_alsa_control(card, WAVE_ALSA_HEADPHONE_MUTE) or {}
     return {
         "gainRaw": gain.get("value"),
         "gainDb": round(gain.get("value", 0) / 2, 1) if gain else None,
         "gainPercent": gain.get("percent"),
-        "muted": not mic_switch.get("on", True),
+        "gainControl": gain.get("name"),
+        "muted": not mic_switch.get("on", True) if mic_switch else None,
+        "muteControl": mic_switch.get("name"),
         "headphonePercent": headphones.get("percent"),
-        "headphoneMuted": not headphone_switch.get("on", True),
+        "headphoneControl": headphones.get("name"),
+        "headphoneMuted": not headphone_switch.get("on", True) if headphone_switch else None,
+        "headphoneMuteControl": headphone_switch.get("name"),
     }
 
 
 def set_alsa_control(card, name, value):
     if card is None:
-        raise RuntimeError("Wave:3 ALSA card is unavailable")
+        raise RuntimeError("Wave ALSA card is unavailable")
     result = subprocess.run(["amixer", "-q", "-c", str(card), "cset", "name=" + name, str(value)], capture_output=True, text=True, timeout=3)
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "Could not update Wave:3")
+        raise RuntimeError(result.stderr.strip() or "Could not update Wave")
 
 
 def set_default_wave_source(source_id):
     if source_id is None:
-        raise RuntimeError("Wave:3 input is unavailable")
+        raise RuntimeError("Wave input is unavailable")
     result = subprocess.run(["wpctl", "set-default", str(source_id)], capture_output=True, text=True, timeout=3)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "Could not set default microphone")
 
 
+def wpctl_adjust(node_id, delta=None, mute=False, absolute=None):
+    if node_id is None:
+        raise RuntimeError("Wave PipeWire node is unavailable")
+    wpctl = which("wpctl") or "wpctl"
+    if mute:
+        cmd = [wpctl, "set-mute", str(node_id), "toggle"]
+    elif absolute is not None:
+        cmd = [wpctl, "set-volume", str(node_id), "%d%%" % max(0, min(100, int(absolute)))]
+    elif delta is not None and delta >= 0:
+        cmd = [wpctl, "set-volume", str(node_id), "%d%%+" % abs(int(delta))]
+    else:
+        cmd = [wpctl, "set-volume", str(node_id), "%d%%-" % abs(int(delta or 0))]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=3)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Could not update Wave via PipeWire")
+
+
 def perform_wave_action(wave, action):
     if not wave:
-        raise RuntimeError("Wave:3 is not connected")
+        raise RuntimeError("Wave:3 / Wave XLR is not connected")
     card = wave.get("card")
+    gain_ctl = wave.get("gainControl") or WAVE_ALSA_GAIN[0]
+    mute_ctl = wave.get("muteControl") or WAVE_ALSA_MUTE[0]
+    hp_ctl = wave.get("headphoneControl") or WAVE_ALSA_HEADPHONE[0]
+    hp_mute_ctl = wave.get("headphoneMuteControl") or WAVE_ALSA_HEADPHONE_MUTE[0]
+
+    def with_alsa_or_pipewire(alsa_call, pipewire_call):
+        if card is not None:
+            try:
+                alsa_call()
+                return
+            except RuntimeError:
+                pass
+        pipewire_call()
+
     if action == "wave_gain_up":
-        set_alsa_control(card, "Mic Capture Volume", min(80, int(wave.get("gainRaw") or 0) + 2))
+        with_alsa_or_pipewire(
+            lambda: set_alsa_control(card, gain_ctl, min(80, int(wave.get("gainRaw") or 0) + 2)),
+            lambda: wpctl_adjust(wave.get("sourceId"), delta=5),
+        )
     elif action == "wave_gain_down":
-        set_alsa_control(card, "Mic Capture Volume", max(0, int(wave.get("gainRaw") or 0) - 2))
+        if card is not None:
+            try:
+                set_alsa_control(card, gain_ctl, max(0, int(wave.get("gainRaw") or 0) - 2))
+                return
+            except RuntimeError:
+                pass
+        wpctl_adjust(wave.get("sourceId"), delta=-5)
     elif action == "wave_mute":
-        set_alsa_control(card, "Mic Capture Switch", "toggle")
+        with_alsa_or_pipewire(
+            lambda: set_alsa_control(card, mute_ctl, "toggle"),
+            lambda: wpctl_adjust(wave.get("sourceId"), mute=True),
+        )
     elif action == "wave_headphone_up":
-        set_alsa_control(card, "PCM Playback Volume", "5%+")
+        with_alsa_or_pipewire(
+            lambda: set_alsa_control(card, hp_ctl, "5%+"),
+            lambda: wpctl_adjust(wave.get("sinkId"), delta=5),
+        )
     elif action == "wave_headphone_down":
-        set_alsa_control(card, "PCM Playback Volume", "5%-")
+        with_alsa_or_pipewire(
+            lambda: set_alsa_control(card, hp_ctl, "5%-"),
+            lambda: wpctl_adjust(wave.get("sinkId"), delta=-5),
+        )
     elif action == "wave_headphone_mute":
-        set_alsa_control(card, "PCM Playback Switch", "toggle")
+        with_alsa_or_pipewire(
+            lambda: set_alsa_control(card, hp_mute_ctl, "toggle"),
+            lambda: wpctl_adjust(wave.get("sinkId"), mute=True),
+        )
     elif action == "wave_preset_quiet":
-        set_alsa_control(card, "Mic Capture Volume", 60)
+        with_alsa_or_pipewire(
+            lambda: set_alsa_control(card, gain_ctl, 60),
+            lambda: wpctl_adjust(wave.get("sourceId"), absolute=30),
+        )
     elif action == "wave_preset_normal":
-        set_alsa_control(card, "Mic Capture Volume", 40)
+        with_alsa_or_pipewire(
+            lambda: set_alsa_control(card, gain_ctl, 40),
+            lambda: wpctl_adjust(wave.get("sourceId"), absolute=50),
+        )
     elif action == "wave_preset_loud":
-        set_alsa_control(card, "Mic Capture Volume", 20)
+        with_alsa_or_pipewire(
+            lambda: set_alsa_control(card, gain_ctl, 20),
+            lambda: wpctl_adjust(wave.get("sourceId"), absolute=70),
+        )
     elif action == "wave_default":
         set_default_wave_source(wave.get("sourceId"))
     else:
@@ -1022,7 +1318,8 @@ def parse_key_report(data, spec):
 
 class Daemon:
     def __init__(self):
-        self.hid, self.devices, self.previous = Hid(), {}, {}
+        self.hid = None
+        self.devices, self.previous = {}, {}
         self.profile, self.mtime = load_profile(), PROFILE.stat().st_mtime
         self.brightness = int(self.profile.get("brightness", 55))
         self.light_states = []
@@ -1036,17 +1333,26 @@ class Daemon:
             "lights": [], "devices": [], "recentReports": {},
             "lastAction": "", "lastEvent": "", "error": "", "updatedAt": int(time.time()),
         }
+        try:
+            self.hid = Hid()
+        except RuntimeError as error:
+            self.status["error"] = str(error)
 
     def keys_for(self, spec):
         if spec.get("kind") == "classic":
             return list(self.profile.get("classicKeys", []))[: spec.get("keys", 15)]
         return list(self.profile.get("keys", []))[: spec.get("keys", 8)]
 
+    def reset_key_stream(self, handle, spec):
+        report = int(spec.get("report", 1024))
+        self.hid.write(handle, [0x02] + [0] * (report - 1))
+
     def send_key_image(self, handle, spec, index, key):
         path = rendered_key_image(key.get("action", ""), key.get("label", ""), spec)
-        if not path or not pathlib.Path(path).exists():
-            return
-        data = pathlib.Path(path).read_bytes()
+        if path and pathlib.Path(path).exists():
+            data = pathlib.Path(path).read_bytes()
+        else:
+            data = blank_key_image(spec)
         hardware_index = origin_index(index, spec.get("cols", 5)) if spec.get("origin_flip") else index
         report = int(spec.get("report", 1024))
         header_len = int(spec.get("header", 8))
@@ -1057,10 +1363,8 @@ class Daemon:
             while remaining > 0:
                 this = min(remaining, chunk)
                 sent = page * chunk
-                header = [0x02, 0x01, page + 1, 0, 1 if this == remaining else 0, hardware_index + 1] + [0] * 10
-                payload = header + list(data[sent:sent + this])
-                payload += [0] * (report - len(payload))
-                self.hid.write(handle, payload)
+                header = original_bmp_header(page, hardware_index, this == remaining)
+                self.hid.write(handle, pad_hid_report(header, data[sent:sent + this], report))
                 remaining -= this
                 page += 1
             return
@@ -1068,22 +1372,24 @@ class Daemon:
         for offset in range(0, len(data), payload_len):
             chunk = data[offset:offset + payload_len]
             final = offset + len(chunk) >= len(data)
-            header = [0x02, 0x07, hardware_index, 1 if final else 0, len(chunk) & 255, len(chunk) >> 8, page & 255, page >> 8]
-            self.hid.write(handle, header + list(chunk) + [0] * (payload_len - len(chunk)))
+            header = jpeg_key_header(hardware_index, page, len(chunk), final)
+            self.hid.write(handle, pad_hid_report(header, chunk, report))
             page += 1
 
     def set_brightness(self, handle, spec, value):
-        length = int(spec.get("feature_len", 32))
-        if spec.get("family") == "original":
-            self.hid.feature(handle, [0x05, 0x55, 0xAA, 0xD1, 0x01, value], length)
-        else:
-            self.hid.feature(handle, [0x03, 0x08, value], length)
+        values, length = brightness_feature(spec, value)
+        written = self.hid.feature(handle, values, length)
+        if written is not None and written < 0:
+            self.status["error"] = "HID brightness write failed"
+        return written
 
     def decorate(self, device):
         spec, handle = device["spec"], device["handle"]
         if spec.get("kind") == "pedal":
             return
         self.set_brightness(handle, spec, self.brightness)
+        if spec.get("kind") != "pedal":
+            self.reset_key_stream(handle, spec)
         for index, key in enumerate(self.keys_for(spec)):
             if spec.get("kind") == "plus":
                 color = key.get("color", [40, 90, 130])
@@ -1100,6 +1406,7 @@ class Daemon:
         if not converter:
             self.status["error"] = "LCD rendering requires ImageMagick"
             return
+        width, height = DEVICE_SPECS[PLUS].get("lcd") or (800, 100)
         try:
             with tempfile.TemporaryDirectory(prefix="elgato-control-lcd-") as directory:
                 svg = pathlib.Path(directory) / "lcd.svg"
@@ -1107,30 +1414,33 @@ class Daemon:
                 svg.write_text(lcd_svg(self.profile, self.brightness, self.light_states))
                 subprocess.run([converter, str(svg), "-quality", "90", str(jpg)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
                 data = jpg.read_bytes()
+            report, header_len = 1024, 16
+            payload_len = report - header_len
             page = 0
-            for offset in range(0, len(data), 1016):
-                payload = data[offset:offset + 1016]
+            for offset in range(0, len(data), payload_len):
+                payload = data[offset:offset + payload_len]
                 final = offset + len(payload) >= len(data)
-                header = [0x02, 0x0B, 0, 1 if final else 0, len(payload) & 255, len(payload) >> 8, page & 255, page >> 8]
-                self.hid.write(handle, header + list(payload) + [0] * (1016 - len(payload)))
+                header = plus_lcd_header(page, len(payload), final, 0, 0, width, height)
+                self.hid.write(handle, pad_hid_report(header, payload, report))
                 page += 1
             self.lcd_signature = signature
         except (OSError, subprocess.SubprocessError) as error:
             self.status["error"] = "LCD: " + str(error)
 
-    def connect(self):
-        found = self.hid.paths()
-        live = {x["path"] for x in found}
-        for path in list(self.devices):
-            if path not in live:
-                self.hid.lib.hid_close(self.devices.pop(path)["handle"])
-        for info in found:
-            if info["path"] not in self.devices:
-                handle = self.hid.open(info["path"])
-                if handle:
-                    device = dict(info, handle=handle)
-                    self.devices[info["path"]] = device
-                    self.decorate(device)
+    def _open_device(self, info):
+        candidates = [info["path"]] + [path for path in (info.get("alternates") or []) if path]
+        seen = set()
+        for path in candidates:
+            if path in seen:
+                continue
+            seen.add(path)
+            handle = self.hid.open(path)
+            if handle:
+                info["path"] = path
+                return handle
+        return None
+
+    def _publish_device_summary(self):
         summary = {}
         for device in self.devices.values():
             spec = device["spec"]
@@ -1152,6 +1462,48 @@ class Daemon:
                 "count": len([x for x in self.status["lights"] if x.get("reachable")]),
             })
         self.status["devices"] = devices
+
+    def connect(self):
+        """Open every present HID device. Classic 15-key and Stream Deck + must both stay open."""
+        if self.hid is None:
+            try:
+                self.hid = Hid()
+                if self.status.get("error", "").startswith("hidapi"):
+                    self.status["error"] = ""
+            except RuntimeError as error:
+                self.status["error"] = str(error)
+                self._publish_device_summary()
+                return
+        found = self.hid.paths()
+        live = {item["path"] for item in found}
+        for item in found:
+            live.update(item.get("alternates") or [])
+        for path in list(self.devices):
+            if path not in live:
+                try:
+                    self.hid.close(self.devices.pop(path)["handle"])
+                except OSError:
+                    self.devices.pop(path, None)
+        open_errors = []
+        for info in found:
+            if info["path"] in self.devices:
+                continue
+            handle = self._open_device(info)
+            if handle:
+                device = dict(info, handle=handle)
+                self.devices[info["path"]] = device
+                try:
+                    self.decorate(device)
+                except (OSError, ValueError) as error:
+                    self.status["error"] = "HID decorate: " + str(error)
+            else:
+                reason = self.hid.last_error() or "hid_open_path failed"
+                open_errors.append("%s: %s" % (info["path"], reason))
+        if open_errors and not self.devices:
+            self.status["error"] = "HID open failed: " + "; ".join(open_errors)
+        elif not open_errors and str(self.status.get("error") or "").startswith("HID open failed"):
+            self.status["error"] = ""
+        self._publish_device_summary()
 
     def act(self, action):
         if not action or action == "none":
@@ -1345,7 +1697,8 @@ class Daemon:
                 last_status = now
             time.sleep(.025)
         for device in self.devices.values():
-            self.hid.lib.hid_close(device["handle"])
+            if self.hid:
+                self.hid.close(device["handle"])
         self.status["running"] = False
         write_status(self.status)
 
