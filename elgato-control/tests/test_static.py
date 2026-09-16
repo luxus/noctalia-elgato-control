@@ -124,6 +124,7 @@ class FixtureTests(unittest.TestCase):
         self.assertIn("function onClose(", panel)
         service = (PLUGIN / "service.luau").read_text()
         self.assertIn("elgato-control daemon", service)
+        self.assertIn("shellToken(helper)", service)
         self.assertIn("python3", service)
         editor = (PLUGIN / "editor.luau").read_text()
         self.assertIn("function editor.saveArgv", editor)

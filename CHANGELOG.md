@@ -15,7 +15,9 @@ trees; status/profile are read from disk so `runAsync` slots stay free for
 `set-key` / `set-dial` / `set-pedal`; `set-key` requires `--device classic|plus`;
 service `processMatches` needle is the daemon, not every CLI. ImageMagick is
 found via the same NixOS bin extras as `search_path()`. Wave / Key Light tabs
-stay live controls from daemon status.
+stay live controls from daemon status. A second daemon refuses the hidraw
+flock instead of opening Classic and Plus out from under the owner; a failed
+`hid_open_path` is recorded in `status.error` even when the other deck stays open.
 
 ## 1.1.0
 
