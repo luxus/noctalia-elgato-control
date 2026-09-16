@@ -1,0 +1,12 @@
+# Elgato Stream Deck family (VID 0fd9) — hidraw + USB access for the plugin daemon.
+# Filename must sort before systemd 73-seat-late.rules so TAG+="uaccess" applies.
+# NixOS services.udev.extraRules writes 99-local.rules (too late). This flake's
+# nixosModules.default installs these via services.udev.packages.
+
+# hidraw node used by libhidapi-hidraw (Mk.2 / Plus / Pedal)
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0fd9", TAG+="uaccess", MODE="0660", GROUP="input"
+KERNEL=="hidraw*", ATTRS{idVendor}=="0fd9", TAG+="uaccess", MODE="0660", GROUP="input"
+
+# USB device node used by libhidapi-libusb (needed for original 2017 Stream Deck)
+# Also covers Wave:3 / Wave XLR USB audio (0x0070 / 0x007d) for seat access.
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0fd9", TAG+="uaccess", MODE="0660", GROUP="input"

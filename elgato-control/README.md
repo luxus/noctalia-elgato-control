@@ -22,7 +22,7 @@ noctalia msg plugins enable luxus/elgato-control
 - QML bar / panel / service rewritten as `widget.luau`, `panel.luau`, `service.luau`
 - Visual editor ported to Luau: click a key/dial/pedal, pick an action, live apply
 - Manifest is `plugin.toml` (`luxus/elgato-control`, `plugin_api = 24`)
-- HID daemon still Python + hidapi, with the 15-key Stream Deck family
+- HID daemon still Python + hidapi: Classic 15-key **and** Stream Deck + at once, Plus dials/LCD, Pedal, Wave:3 / Wave XLR (PipeWire/ALSA), Key Lights if present
 - Actions target Noctalia IPC (`noctalia msg …`) with niri fallbacks on lea
 
 ## Supported hardware
@@ -34,13 +34,15 @@ noctalia msg plugins enable luxus/elgato-control
 | Stream Deck Mk.2 | `0x0080` | 15 keys, JPEG 72×72 rotated 180° |
 | Stream Deck Mk.2 Scissor | `0x00A5` | same protocol as Mk.2 |
 | Stream Deck 15-key module | `0x00B9` | same protocol as Mk.2 |
-| Stream Deck + | `0x0084` | 8 keys, 4 dials, 800×100 LCD |
+| Stream Deck + | `0x0084` | 8 keys, 4 dials, 800×100 LCD; open **together** with a 15-key |
 | Stream Deck Pedal | `0x0086` | 3 pedals |
 | Key Light / Key Light Neo | mDNS `_elg._tcp` | grouped power, brightness, temperature |
-| Wave:3 | PipeWire / ALSA | gain, mute, headphones, presets |
+| Wave:3 | USB `0x0070` · PipeWire / ALSA | gain, mute, headphones, presets |
+| Wave XLR | USB `0x007d` · PipeWire / ALSA | same controls; XLR has no ALSA gain — volume via `wpctl` |
 
-Original 15-key and Stream Deck + can be connected at the same time. Each has
-its own key map (`classicKeys` vs `keys`). Plus LCD/dials, Pedal, Wave, and
+Original 15-key and Stream Deck + **must** be usable at the same time. Each has
+its own key map (`classicKeys` vs `keys`). The daemon opens every matching HID
+device (not Classic-only). Plus LCD/dials, Pedal, Wave:3 / Wave XLR, and
 Key Lights only show in the panel when that device is present.
 
 ## hidapi on NixOS
@@ -54,11 +56,13 @@ path. This plugin does **not** require nix-ld.
 
 Typical NixOS locations, in the order the CLI tries them after those overrides:
 
-- `libhidapi-hidraw.so.0` (via `LD_LIBRARY_PATH` if you set one)
+- `libhidapi-hidraw.so.0` / `libhidapi-libusb.so.0` (via `LD_LIBRARY_PATH` if you set one)
+- `~/.nix-profile/lib/libhidapi-hidraw.so.0`
 - `/run/current-system/sw/lib/libhidapi-hidraw.so.0` (if `hidapi` is in `environment.systemPackages`)
 - `/usr/lib/x86_64-linux-gnu/libhidapi-hidraw.so.0` (Debian/Ubuntu)
 
-The flake package wraps the CLI with nixpkgs `hidapi`:
+`libhidapi-libusb` is tried after hidraw (original 2017 Stream Deck). The flake
+package wraps the CLI with nixpkgs `hidapi` and adds its `lib` to `LD_LIBRARY_PATH`.
 
 ```bash
 nix run . -- status --json

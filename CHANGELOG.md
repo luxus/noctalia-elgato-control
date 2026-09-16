@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+Daemon / HID / NixOS: open Classic 15-key **and** Stream Deck + at the same time
+(keys on both; Plus dials + LCD artwork + brightness). Wave:3 **and** Wave XLR
+via PipeWire/ALSA (`wpctl` when XLR has no ALSA gain). Key Lights unchanged if
+present. hidapi lookup includes libusb + Nix profile paths. udev rules are
+`70-elgato-streamdeck.rules` installed with `services.udev.packages` so
+`TAG+="uaccess"` actually applies.
+
 ## 1.1.0
 
 Visual editor and action-mapping release for lea (NixOS, `x86_64-linux`, Noctalia v5 `plugin_api` 24). Tag this as `v1.1.0`. Do not treat 1.0.0 as a working editor.
