@@ -13,6 +13,13 @@ local function quote(path)
   return "'" .. tostring(path):gsub("'", "'\\''") .. "'"
 end
 
+local function shellToken(path)
+  if tostring(path):match("^[%w%./_%-+]+$") then
+    return path
+  end
+  return quote(path)
+end
+
 local function helperPrefix()
   if type(noctalia.commandExists) == "function" and noctalia.commandExists("python3") then
     return "python3 "
@@ -26,7 +33,7 @@ local function daemonCommand()
   if type(hid) == "string" and hid ~= "" then
     prefix = "ELGATO_HIDAPI=" .. quote(hid) .. " "
   end
-  return prefix .. helperPrefix() .. quote(helper) .. " daemon"
+  return prefix .. helperPrefix() .. shellToken(helper) .. " daemon"
 end
 
 local function startDaemon()

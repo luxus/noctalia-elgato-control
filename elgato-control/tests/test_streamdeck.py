@@ -547,7 +547,9 @@ class DualOpenAndDiscoveryTests(unittest.TestCase):
         self.assertNotIn("/dev/hidraw1", daemon.devices)
         self.assertIsNotNone(daemon.status["classic"])
         self.assertIsNone(daemon.status["plus"])
-        self.assertEqual("", daemon.status["error"] or "")
+        self.assertIn("HID open failed", daemon.status["error"])
+        self.assertIn("/dev/hidraw1", daemon.status["error"])
+        self.assertIn("plus", daemon.status["error"])
 
     def test_open_failure_when_no_device_opens_sets_status_error(self):
         hid = self.fake_hid([self.classic_info()], opens={"/dev/hidraw0": None})
@@ -613,6 +615,18 @@ class DualOpenAndDiscoveryTests(unittest.TestCase):
         daemon.decorate({"spec": module.DEVICE_SPECS[module.PEDAL], "handle": "pedal", "kind": "pedal"})
         hid.write.assert_not_called()
         hid.feature.assert_not_called()
+
+    def test_second_lock_does_not_kill_the_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(module, "STATE", pathlib.Path(directory)):
+                first = module.acquire_daemon_lock()
+                try:
+                    with self.assertRaises(module.DaemonLocked):
+                        module.acquire_daemon_lock()
+                finally:
+                    first.close()
+                second = module.acquire_daemon_lock()
+                second.close()
 
 
 class WaveXlrTests(unittest.TestCase):

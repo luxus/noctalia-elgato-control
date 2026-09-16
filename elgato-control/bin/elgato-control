@@ -2,7 +2,7 @@
 """HID daemon for Elgato Stream Deck hardware on Noctalia v5."""
 from __future__ import annotations
 
-import argparse, ctypes, ctypes.util, hashlib, ipaddress, json, os, pathlib, re, shutil, signal, socket, struct, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import argparse, ctypes, ctypes.util, fcntl, hashlib, ipaddress, json, os, pathlib, re, shutil, signal, socket, struct, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 VID = 0x0FD9
 PLUS, PEDAL = 0x0084, 0x0086
@@ -89,6 +89,33 @@ LEGACY_CONFIG = pathlib.Path(os.environ.get("XDG_CONFIG_HOME", pathlib.Path.home
 PROFILE = CONFIG / "profile.json"
 STATUS = STATE / "status.json"
 ICONS = ROOT / "assets" / "keys"
+
+
+class DaemonLocked(RuntimeError):
+    """A second elgato-control daemon must not steal exclusive hidraw nodes."""
+
+
+_DAEMON_LOCK_HANDLE = None
+
+
+def acquire_daemon_lock():
+    """Exclusive flock so a leftover start cannot open Classic and Plus out from under the owner."""
+    global _DAEMON_LOCK_HANDLE
+    STATE.mkdir(parents=True, exist_ok=True)
+    handle = open(STATE / "daemon.lock", "a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        handle.close()
+        raise DaemonLocked(
+            "elgato-control daemon already running; refusing a second hidraw owner"
+        ) from error
+    handle.seek(0)
+    handle.truncate()
+    handle.write("%d\n" % os.getpid())
+    handle.flush()
+    _DAEMON_LOCK_HANDLE = handle
+    return handle
 KEY_CACHE = pathlib.Path(os.environ.get("XDG_CACHE_HOME", pathlib.Path.home() / ".cache")) / "elgato-control" / "keys"
 
 KEY_ACTIONS = {
@@ -1501,10 +1528,10 @@ class Daemon:
                     self.status["error"] = "HID decorate: " + str(error)
             else:
                 reason = self.hid.last_error() or "hid_open_path failed"
-                open_errors.append("%s: %s" % (info["path"], reason))
-        if open_errors and not self.devices:
+                open_errors.append("%s (%s): %s" % (info["path"], info.get("kind") or "deck", reason))
+        if open_errors:
             self.status["error"] = "HID open failed: " + "; ".join(open_errors)
-        elif not open_errors and str(self.status.get("error") or "").startswith("HID open failed"):
+        elif str(self.status.get("error") or "").startswith("HID open failed"):
             self.status["error"] = ""
         self._publish_device_summary()
 
@@ -1797,7 +1824,13 @@ def main():
         }
         print(json.dumps(data) if args.json else json.dumps(data, indent=2))
         return
+    try:
+        lock_handle = acquire_daemon_lock()
+    except DaemonLocked as error:
+        print(error, file=sys.stderr)
+        raise SystemExit(1) from error
     daemon = Daemon()
+    daemon.lock_handle = lock_handle
     signal.signal(signal.SIGTERM, lambda *_: setattr(daemon, "running", False))
     signal.signal(signal.SIGINT, lambda *_: setattr(daemon, "running", False))
     daemon.loop()
