@@ -17,7 +17,18 @@ class ActionCatalogTests(unittest.TestCase):
         self.assertIn("launcher", values)
         self.assertIn("niri_close", values)
         self.assertIn("none", values)
+        self.assertIn("wave_mute", values)
+        self.assertIn("lights_toggle", values)
         self.assertIn("workspace_next", values)
+
+    def test_catalog_does_not_resolve_icons(self):
+        with mock.patch.object(module, "action_icon", side_effect=AssertionError("catalog must not resolve icons")):
+            with mock.patch.object(module, "desktop_applications", return_value=[("firefox", "Firefox")]):
+                catalog = module.action_catalog()
+        values = {item["value"] for item in catalog}
+        self.assertIn("lock", values)
+        self.assertIn("app:firefox", values)
+        self.assertTrue(all("icon" not in item for item in catalog))
 
     def test_lock_uses_noctalia_session_lock(self):
         with mock.patch.object(module, "which", side_effect=lambda *names: "noctalia" if "noctalia" in names else None):
@@ -37,6 +48,24 @@ class ActionCatalogTests(unittest.TestCase):
 
         with mock.patch.object(module, "which", side_effect=fake_which):
             with mock.patch.dict(os.environ, {"NIRI_SOCKET": "/run/user/1000/niri.sock"}, clear=False):
+                self.assertEqual(
+                    ["/run/current-system/sw/bin/niri", "msg", "action", "focus-workspace-down"],
+                    module.command_for("workspace_next"),
+                )
+                self.assertEqual(
+                    ["/run/current-system/sw/bin/niri", "msg", "action", "close-window"],
+                    module.command_for("niri_close"),
+                )
+
+    def test_niri_workspace_without_socket_still_uses_niri(self):
+        def fake_which(*names):
+            if "niri" in names:
+                return "/run/current-system/sw/bin/niri"
+            return None
+
+        env = {key: value for key, value in os.environ.items() if key not in ("NIRI_SOCKET", "HYPRLAND_INSTANCE_SIGNATURE")}
+        with mock.patch.object(module, "which", side_effect=fake_which):
+            with mock.patch.dict(os.environ, env, clear=True):
                 self.assertEqual(
                     ["/run/current-system/sw/bin/niri", "msg", "action", "focus-workspace-down"],
                     module.command_for("workspace_next"),
@@ -129,6 +158,18 @@ class EditorCliRoundTripTests(unittest.TestCase):
             catalog = json.loads(run_cli(["catalog"], config, state).stdout)
             self.assertTrue(any(item["value"] == "lock" for item in catalog))
             self.assertTrue(any(item["value"] == "niri_close" for item in catalog))
+            self.assertTrue(any(item["value"] == "wave_mute" for item in catalog))
+            self.assertTrue(any(item["value"] == "lights_toggle" for item in catalog))
+            mapped_plus = run_cli(["set-key", "--device", "plus", "1", "terminal"], config, state)
+            self.assertEqual(0, mapped_plus.returncode, mapped_plus.stderr)
+            dial = run_cli(["set-dial", "1", "press", "volume_mute"], config, state)
+            self.assertEqual(0, dial.returncode, dial.stderr)
+            missing = run_cli(["set-key", "1", "lock"], config, state)
+            self.assertNotEqual(0, missing.returncode)
+            profile = json.loads((config / "elgato-control" / "profile.json").read_text())
+            self.assertEqual("lock", profile["classicKeys"][0]["action"])
+            self.assertEqual("terminal", profile["keys"][0]["action"])
+            self.assertEqual("volume_mute", profile["dials"][0]["press"])
 
 
 if __name__ == "__main__":

@@ -374,6 +374,26 @@ class ProtocolEncodeTests(unittest.TestCase):
         self.assertEqual(1, hid.writes[-1][10])
         self.assertEqual(1024, len(hid.writes[0]))
 
+    def test_lcd_finds_magick_via_search_path_which(self):
+        hid = self.fake_hid()
+        daemon = self.daemon_with(hid)
+        jpeg = b"\xff\xd8" + b"J" * 200
+
+        def fake_run(command, **_kwargs):
+            pathlib.Path(command[-1]).write_bytes(jpeg)
+            return subprocess.CompletedProcess(command, 0)
+
+        with mock.patch.object(module, "which", return_value="/run/current-system/sw/bin/magick") as finder, \
+             mock.patch.object(module.subprocess, "run", side_effect=fake_run):
+            daemon.update_lcd("dev", force=True)
+        finder.assert_called_with("magick", "convert")
+        self.assertEqual(0x02, hid.writes[0][0])
+        self.assertEqual(0x0C, hid.writes[0][1])
+
+    def test_resolve_icon_does_not_recursive_glob(self):
+        with mock.patch.object(module.pathlib.Path, "glob", side_effect=AssertionError("no recursive glob")):
+            self.assertEqual("", module.resolve_icon("missing-icon-name"))
+
 
 class FramingHelperTests(unittest.TestCase):
     def test_brightness_is_clamped_and_original_uses_feature_17(self):

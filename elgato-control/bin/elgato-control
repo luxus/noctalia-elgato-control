@@ -751,26 +751,25 @@ def resolve_icon(icon):
         pathlib.Path("/usr/share/icons/hicolor"),
         pathlib.Path("/usr/share/pixmaps"),
     ])
-    candidates = []
-    seen_roots = set()
+    # Direct lookups only. Recursive glob over NixOS share/icons made `catalog`
+    # miss the host's runAsync timeout, so the inspector had no actions.
     for root in roots:
-        key = str(root)
-        if key in seen_roots or not root.is_dir():
+        if not root.is_dir():
             continue
-        seen_roots.add(key)
-        for name in names:
-            candidates.extend(root.glob("**/" + name))
-    if not candidates:
-        return ""
-
-    def score(path):
-        text = str(path)
-        for rank, token in enumerate(("256x256", "128x128", "scalable", "512x512", "64x64", "48x48")):
-            if token in text:
-                return rank
-        return 20
-
-    return str(sorted(candidates, key=score)[0])
+        if root.name == "pixmaps":
+            for name in names:
+                candidate = root / name
+                if candidate.is_file():
+                    return str(candidate)
+            continue
+        for theme in ("hicolor", "Adwaita", "breeze", "Papirus"):
+            for size in ("48x48", "64x64", "128x128", "32x32", "scalable"):
+                for kind in ("apps", "devices", "status", "mimetypes"):
+                    for name in names:
+                        candidate = root / theme / size / kind / name
+                        if candidate.is_file():
+                            return str(candidate)
+    return ""
 
 
 def action_icon(action):
@@ -783,10 +782,12 @@ def action_icon(action):
 
 
 def action_catalog():
-    options = [{"value": action, "label": "Function · " + label, "icon": action_icon(action)} for action, label in BUILTIN_ACTIONS]
-    options.extend({"value": action, "label": "Key · " + action_label(action), "icon": action_icon(action)} for action in KEY_ACTIONS)
+    # Labels only. The panel never displays catalog icons, and resolving them
+    # walked XDG icon themes once per .desktop (seconds on NixOS).
+    options = [{"value": action, "label": "Function · " + label} for action, label in BUILTIN_ACTIONS]
+    options.extend({"value": action, "label": "Key · " + action_label(action)} for action in KEY_ACTIONS)
     options.extend(
-        {"value": "app:" + desktop_id, "label": "Application · " + plain_text(name), "icon": action_icon("app:" + desktop_id)}
+        {"value": "app:" + desktop_id, "label": "Application · " + plain_text(name)}
         for desktop_id, name in desktop_applications()
     )
     return options
@@ -797,7 +798,7 @@ def rendered_key_image(action, label, spec):
     fmt = spec.get("image", "jpeg")
     rotate = int(spec.get("rotate", 0))
     existing = ICONS / (action + ".jpg")
-    converter = shutil.which("magick") or shutil.which("convert")
+    converter = which("magick", "convert")
     if not converter:
         return existing if existing.is_file() else None
     source = str(existing) if existing.is_file() else action_icon(action)
@@ -926,7 +927,7 @@ def which(*names):
 
 
 def compositor():
-    if os.environ.get("NIRI_SOCKET"):
+    if os.environ.get("NIRI_SOCKET") or (which("niri") and not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")):
         return "niri"
     if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
         return "hyprland"
@@ -1402,7 +1403,10 @@ class Daemon:
         signature = json.dumps({"dials": self.profile.get("dials", []), "lights": self.light_states, "brightness": self.brightness}, sort_keys=True, default=str)
         if not force and signature == self.lcd_signature:
             return
-        converter = shutil.which("magick") or shutil.which("convert")
+        # Same extras as search_path() (NixOS /run/current-system, profiles).
+        # Do not use process PATH alone. LCD HID is Elgato 0x02/0x0C
+        # 16-byte rectangle.
+        converter = which("magick", "convert")
         if not converter:
             self.status["error"] = "LCD rendering requires ImageMagick"
             return
@@ -1748,7 +1752,9 @@ def main():
         print(PROFILE)
         return
     if args.command == "set-key":
-        device = args.device or ("classic" if args.index > 8 else "plus")
+        if not args.device:
+            parser.error("set-key requires --device classic or plus (Classic 1–15 and Plus 1–8 are both valid on dual-deck)")
+        device = args.device
         limit = 15 if device == "classic" else 8
         if args.index < 1 or args.index > limit:
             parser.error("Key index must be 1–%d for %s" % (limit, device))

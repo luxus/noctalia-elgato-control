@@ -91,11 +91,14 @@ class FixtureTests(unittest.TestCase):
 
     def test_changelog_and_release_docs_exist(self):
         changelog = (ROOT / "CHANGELOG.md").read_text()
+        self.assertIn("Unreleased", changelog)
         self.assertIn("1.1.0", changelog)
         self.assertIn("black", changelog.lower())
         readme = (ROOT / "README.md").read_text()
         self.assertIn("visual editor", readme.lower())
         self.assertIn("v1.1.0", readme)
+        self.assertIn("classicKeys", readme)
+        self.assertIn("--device", readme)
 
     def test_luau_entrypoints_exist_and_are_not_qml(self):
         service = (PLUGIN / "service.luau").read_text()
@@ -109,15 +112,28 @@ class FixtureTests(unittest.TestCase):
             for function in functions:
                 self.assertIn("function %s(" % function, text, "%s %s" % (name, function))
         panel = (PLUGIN / "panel.luau").read_text()
-        self.assertIn('require("./editor.luau")', panel)
+        self.assertIn("./editor.luau", panel)
         self.assertIn("noctalia.runAsync(", panel)
+        self.assertIn("noctalia.readFile", panel)
+        self.assertIn("tree = function", panel)
+        self.assertIn("python3", panel)
         self.assertIn("{ helper,", panel)
         self.assertNotIn("ui.select", panel)
         self.assertNotIn("ui.box({", panel)
+        self.assertNotIn('error("Elgato Control: panel.render', panel)
         self.assertIn("function onClose(", panel)
+        service = (PLUGIN / "service.luau").read_text()
+        self.assertIn("elgato-control daemon", service)
+        self.assertIn("python3", service)
         editor = (PLUGIN / "editor.luau").read_text()
         self.assertIn("function editor.saveArgv", editor)
         self.assertIn("function editor.filterCatalog", editor)
+        self.assertIn("limit > 0 and #matches >= limit", editor)
+        helper = (PLUGIN / "bin" / "elgato-control").read_text()
+        self.assertIn('which("magick", "convert")', helper)
+        self.assertIn("[0x02, 0x0C,", helper)
+        self.assertIn("set-key requires --device", helper)
+        self.assertNotIn('root.glob("**/"', helper)
 
     def test_luau_syntax_when_compiler_is_available(self):
         compiler = shutil.which("luau-compile")

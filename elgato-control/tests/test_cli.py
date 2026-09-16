@@ -141,11 +141,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual("lock", profile["classicKeys"][11]["action"])
         self.assertNotEqual("lock", profile["keys"][0]["action"])
 
-    def test_set_key_without_device_uses_classic_above_eight(self):
-        result = self.run_cli("set-key", "9", "launcher")
-        self.assertEqual(0, result.returncode, result.stderr)
+    def test_set_key_without_device_is_rejected(self):
+        result = self.run_cli("set-key", "1", "lock")
+        self.assertEqual(2, result.returncode)
+        self.assertIn("--device", result.stderr)
         profile = json.loads((self.config / "elgato-control" / "profile.json").read_text())
-        self.assertEqual("launcher", profile["classicKeys"][8]["action"])
+        self.assertNotEqual("lock", profile["keys"][0]["action"])
+        self.assertNotEqual("lock", profile["classicKeys"][0]["action"])
 
     def test_set_key_plus_rejects_index_above_eight(self):
         result = self.run_cli("set-key", "--device", "plus", "9", "lock")
@@ -178,6 +180,9 @@ class CliTests(unittest.TestCase):
         self.assertTrue(any(item["value"] == "key_home" for item in parsed_catalog))
         self.assertTrue(any(item["value"] == "niri_close" for item in parsed_catalog))
         self.assertTrue(any(item["value"] == "none" for item in parsed_catalog))
+        self.assertTrue(any(item["value"] == "lights_toggle" for item in parsed_catalog))
+        self.assertTrue(any(item["value"] == "wave_mute" for item in parsed_catalog))
+        self.assertTrue(all("icon" not in item for item in parsed_catalog))
 
 
 if __name__ == "__main__":

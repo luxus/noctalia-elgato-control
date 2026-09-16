@@ -34,7 +34,16 @@ jobs:
             echo "No Noctalia runtime, Stream Deck, or Key Light is required in CI."
           fi
           if command -v luau >/dev/null; then
-            luau elgato-control/tests/test_editor.luau
+            python3 -c '
+from pathlib import Path
+mod = Path("elgato-control/editor.luau").read_text()
+if not mod.rstrip().endswith("return editor"):
+    raise SystemExit("editor.luau must end with return editor")
+mod = mod.rstrip()[:-len("return editor")].rstrip() + "\n"
+tests = Path("elgato-control/tests/test_editor.luau").read_text()
+Path("editor-check.luau").write_text(mod + "\n" + tests)
+'
+            luau editor-check.luau
           fi
 
   flake:

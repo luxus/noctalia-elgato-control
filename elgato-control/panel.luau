@@ -3,27 +3,20 @@
 -- Layout follows official-plugins/example/panel.luau: column/row/scroll only.
 -- The box node is a leaf color swatch, not a flex parent — using it as a layout
 -- parent produced a black panel on lea.
+-- Do not error() at load: a thrown panel entry is an empty surface.
 
-if type(panel) ~= "table" or type(panel.render) ~= "function" then
-  error("Elgato Control: panel.render is missing. Need Noctalia v5 plugin_api 24. A black panel usually means the surface API never ran.")
-end
-if type(ui) ~= "table" then
-  error("Elgato Control: ui namespace is missing.")
-end
-for _, name in ipairs({ "column", "row", "scroll", "label", "button", "input", "slider", "progress", "glyph", "image", "spacer" }) do
-  if type(ui[name]) ~= "function" then
-    error("Elgato Control: ui." .. name .. " is missing. Need Noctalia v5 declarative UI.")
+local editor
+local requireOk, requireResult = pcall(require, "./editor.luau")
+if requireOk and type(requireResult) == "table" then
+  editor = requireResult
+else
+  editor = nil
+  if type(noctalia) == "table" and type(noctalia.log) == "function" then
+    noctalia.log("Elgato Control: require(./editor.luau) failed: " .. tostring(requireResult))
   end
 end
-if type(noctalia) ~= "table" or type(noctalia.runAsync) ~= "function" then
-  error("Elgato Control: noctalia.runAsync is missing.")
-end
-if type(noctalia.json) ~= "table" or type(noctalia.json.decode) ~= "function" then
-  error("Elgato Control: noctalia.json.decode is missing.")
-end
 
-local editor = require("./editor.luau")
-local helper = (noctalia.pluginDir() or ".") .. "/bin/elgato-control"
+local helper = (type(noctalia) == "table" and type(noctalia.pluginDir) == "function" and noctalia.pluginDir() or ".") .. "/bin/elgato-control"
 local open = false
 local status = { running = false, plus = nil, classic = nil, pedal = nil, wave = nil, lights = {}, profile = "Noctalia Default" }
 local profile = { keys = {}, classicKeys = {}, dials = {}, pedals = {} }
@@ -35,19 +28,233 @@ local selectedSlot = "press"
 local selectedLight = 0
 local filter = ""
 local errorText = ""
+local catalogLoading = false
+local mutating = false
+local lightBrightness = 40
+local lightKelvin = 5000
 local tree
+
+local function decodeJson(raw)
+  if type(raw) ~= "string" or raw == "" then
+    return nil
+  end
+  if type(noctalia) ~= "table" or type(noctalia.json) ~= "table" or type(noctalia.json.decode) ~= "function" then
+    return nil
+  end
+  local parsed = noctalia.json.decode(raw)
+  if type(parsed) == "table" then
+    return parsed
+  end
+  return nil
+end
+
+local function jsonPath(kind)
+  if kind == "status" then
+    local xdg = type(noctalia.getenv) == "function" and noctalia.getenv("XDG_STATE_HOME") or nil
+    if type(xdg) == "string" and xdg ~= "" then
+      return xdg .. "/elgato-control/status.json"
+    end
+    return noctalia.expandPath("~/.local/state/elgato-control/status.json")
+  end
+  local xdg = type(noctalia.getenv) == "function" and noctalia.getenv("XDG_CONFIG_HOME") or nil
+  if type(xdg) == "string" and xdg ~= "" then
+    return xdg .. "/elgato-control/profile.json"
+  end
+  return noctalia.expandPath("~/.config/elgato-control/profile.json")
+end
+
+local function readJsonFile(kind)
+  if type(noctalia.readFile) ~= "function" then
+    return nil
+  end
+  local raw = noctalia.readFile(jsonPath(kind))
+  return decodeJson(raw)
+end
+
+local function helperArgv(parts)
+  local argv = {}
+  if type(noctalia.commandExists) == "function" and noctalia.commandExists("python3") then
+    table.insert(argv, "python3")
+  end
+  table.insert(argv, helper)
+  for _, part in ipairs(parts) do
+    table.insert(argv, part)
+  end
+  return argv
+end
+
+local function fallbackEditor()
+  return {
+    capabilities = function(value)
+      value = value or {}
+      return {
+        plus = type(value.plus) == "table" or value.plus == true,
+        classic = type(value.classic) == "table" or value.classic == true,
+        pedal = type(value.pedal) == "table" or value.pedal == true,
+        wave = type(value.wave) == "table" or value.wave == true,
+        keylight = false,
+        connected = value.plus ~= nil or value.classic ~= nil or value.pedal ~= nil or value.wave ~= nil,
+      }
+    end,
+    deviceTabs = function(caps)
+      local tabs = {}
+      if caps and caps.classic then
+        table.insert(tabs, "classic")
+      end
+      if caps and caps.plus then
+        table.insert(tabs, "plus")
+      end
+      if caps and caps.pedal then
+        table.insert(tabs, "pedal")
+      end
+      if caps and caps.wave then
+        table.insert(tabs, "wave")
+      end
+      if caps and caps.keylight then
+        table.insert(tabs, "lights")
+      end
+      if #tabs == 0 then
+        return { "classic", "plus" }
+      end
+      return tabs
+    end,
+    tabLabel = function(id)
+      return id
+    end,
+    pickDevice = function(tabs, current)
+      return current or (tabs and tabs[1]) or "classic"
+    end,
+    keysFor = function(value, device)
+      value = value or {}
+      if device == "classic" then
+        return value.classicKeys or {}
+      end
+      if device == "plus" then
+        return value.keys or {}
+      end
+      if device == "pedal" then
+        return value.pedals or {}
+      end
+      if device == "plus-dials" then
+        return value.dials or {}
+      end
+      return {}
+    end,
+    padKeys = function(keys, count, fallback)
+      local out = {}
+      for i = 1, count do
+        out[i] = (keys and keys[i]) or { action = fallback or "none" }
+      end
+      return out
+    end,
+    currentAction = function(keys, index)
+      local item = keys and keys[index]
+      return (type(item) == "table" and item.action) or "none"
+    end,
+    dialSlot = function()
+      return "none"
+    end,
+    saveArgv = function(path, device, control, index, action, slot)
+      if control == "dial" then
+        return { path, "set-dial", tostring(index), slot or "press", action }
+      end
+      if control == "pedal" then
+        return { path, "set-pedal", tostring(index), action }
+      end
+      return { path, "set-key", "--device", device == "classic" and "classic" or "plus", tostring(index), action }
+    end,
+    waveArgv = function(path, action)
+      return { path, "wave", action }
+    end,
+    lightsArgv = function(path, action, target, value)
+      local argv = { path, "lights", action, "--target", target or "all" }
+      if value ~= nil then
+        table.insert(argv, "--value")
+        table.insert(argv, tostring(math.floor(value)))
+      end
+      return argv
+    end,
+    filterCatalog = function(items)
+      return items or {}
+    end,
+    normalizeCatalog = function(items)
+      return items or {}
+    end,
+    inspectorTitle = function(device, control, index)
+      return tostring(device) .. " " .. tostring(control) .. " " .. tostring(index)
+    end,
+    shortLabel = function(item)
+      if type(item) == "table" then
+        return item.label or item.action or "none"
+      end
+      return tostring(item or "none")
+    end,
+    kelvin = function(mireds, fallback)
+      local value = tonumber(mireds)
+      if not value or value <= 0 then
+        return fallback or 5000
+      end
+      return math.floor((1000000 / value) + 0.5)
+    end,
+  }
+end
+
+if editor == nil then
+  editor = fallbackEditor()
+  errorText = "editor.luau did not load; showing a fallback grid"
+end
 
 local function paint()
   if not open then
     return
   end
+  if type(panel) ~= "table" or type(panel.render) ~= "function" then
+    if type(noctalia) == "table" and type(noctalia.log) == "function" then
+      noctalia.log("Elgato Control: panel.render is missing")
+    end
+    return
+  end
+  if type(tree) ~= "function" then
+    if type(ui) == "table" and type(ui.column) == "function" and type(ui.label) == "function" then
+      panel.render(ui.column({ flexGrow = 1, padding = 16, gap = 8 }, {
+        ui.label({ text = "Elgato Control", fontWeight = "bold" }),
+        ui.label({ text = "Panel tree is not ready.", color = "error" }),
+      }))
+    end
+    return
+  end
   panel.render(tree())
 end
 
-local function runHelper(argv, after)
-  local launched = noctalia.runAsync(argv, function(result)
-    if result.exitCode ~= 0 then
-      local err = result.stderr ~= "" and result.stderr or result.stdout
+local function commandArgv(argv)
+  local parts = {}
+  local start = 1
+  if argv[1] == "python3" then
+    start = argv[2] == helper and 3 or 2
+  elseif argv[1] == helper then
+    start = 2
+  end
+  for i = start, #argv do
+    table.insert(parts, argv[i])
+  end
+  return helperArgv(parts)
+end
+
+local function runHelper(argv, after, timeoutMs)
+  if type(noctalia.runAsync) ~= "function" then
+    errorText = "noctalia.runAsync is missing"
+    paint()
+    return
+  end
+  local command = commandArgv(argv)
+  local launched = noctalia.runAsync(command, function(result)
+    mutating = false
+    result = result or {}
+    if result.timedOut then
+      errorText = "elgato-control timed out"
+      noctalia.log(errorText)
+    elseif result.exitCode ~= 0 then
+      local err = (result.stderr ~= "" and result.stderr) or result.stdout
       errorText = (err ~= "" and err or "elgato-control failed")
       noctalia.log("elgato-control failed: " .. errorText)
     else
@@ -57,8 +264,9 @@ local function runHelper(argv, after)
       after(result)
     end
     paint()
-  end)
+  end, timeoutMs)
   if launched == false then
+    mutating = false
     errorText = "Could not start elgato-control"
     noctalia.log(errorText)
     paint()
@@ -73,37 +281,40 @@ local function tabs()
   return editor.deviceTabs(caps())
 end
 
-function refresh()
+local function loadFromDisk()
+  local parsedStatus = readJsonFile("status")
+  if parsedStatus then
+    status = parsedStatus
+    selectedDevice = editor.pickDevice(tabs(), selectedDevice)
+  end
+  local parsedProfile = readJsonFile("profile")
+  if parsedProfile then
+    profile = parsedProfile
+  end
+end
+
+local function loadCatalog()
+  if #catalog > 0 or catalogLoading then
+    return
+  end
+  catalogLoading = true
+  runHelper({ helper, "catalog" }, function(result)
+    catalogLoading = false
+    if result.exitCode == 0 and result.stdout ~= "" then
+      local parsed = decodeJson(result.stdout)
+      if type(parsed) == "table" then
+        catalog = editor.normalizeCatalog(parsed)
+      end
+    end
+  end, 20000)
+end
+
+local function refresh()
   if not open then
     return
   end
-  runHelper({ helper, "status", "--json" }, function(result)
-    if result.exitCode == 0 and result.stdout ~= "" then
-      local parsed = noctalia.json.decode(result.stdout)
-      if type(parsed) == "table" then
-        status = parsed
-        selectedDevice = editor.pickDevice(tabs(), selectedDevice)
-      end
-    end
-  end)
-  runHelper({ helper, "profile" }, function(result)
-    if result.exitCode == 0 and result.stdout ~= "" then
-      local parsed = noctalia.json.decode(result.stdout)
-      if type(parsed) == "table" then
-        profile = parsed
-      end
-    end
-  end)
-  if #catalog == 0 then
-    runHelper({ helper, "catalog" }, function(result)
-      if result.exitCode == 0 and result.stdout ~= "" then
-        local parsed = noctalia.json.decode(result.stdout)
-        if type(parsed) == "table" then
-          catalog = editor.normalizeCatalog(parsed)
-        end
-      end
-    end)
-  end
+  loadFromDisk()
+  loadCatalog()
   paint()
 end
 
@@ -124,9 +335,15 @@ local function currentMappedAction()
 end
 
 local function saveAction(action, slot)
+  if mutating then
+    return
+  end
+  mutating = true
   local argv = editor.saveArgv(helper, selectedDevice, selectedControl, selectedIndex, action, slot or selectedSlot)
-  runHelper(argv, function()
-    refresh()
+  runHelper(argv, function(result)
+    if result.exitCode == 0 then
+      loadFromDisk()
+    end
   end)
 end
 
@@ -226,7 +443,7 @@ local function deviceButtons()
   for _, id in ipairs(tabs()) do
     table.insert(buttons, ui.button({
       key = "tab-" .. id,
-      text = editor.tabLabel(id),
+      text = editor.tabLabel(id, id == "wave" and (status.wave or {}).product or nil),
       variant = selectedDevice == id and "primary" or "outline",
       controlSize = "sm",
       onClick = function()
@@ -314,7 +531,7 @@ local function wavePreview()
     ui.glyph({ name = "microphone", size = 36, color = muted and "error" or "primary" }),
     ui.label({ text = wave.product or "Wave microphone", fontWeight = "bold" }),
     ui.label({ text = muted and "MUTED" or "LIVE", color = muted and "error" or "primary", fontSize = 11 }),
-    ui.progress({ progress = math.max(0, math.min(1, (wave.gainPercent or 0) / 100)), width = "fill", height = 8 }),
+    ui.progress({ progress = math.max(0, math.min(1, (wave.gainPercent or 0) / 100)), height = 8 }),
     ui.label({
       text = "Gain " .. tostring(wave.gainDb or "--") .. " dB · HP " .. tostring(wave.headphonePercent or "--") .. "%",
       fontSize = 11,
@@ -382,7 +599,7 @@ local function preview()
 end
 
 local function actionButtons(current)
-  local matches = editor.filterCatalog(catalog, filter, current, 80)
+  local matches = editor.filterCatalog(catalog, filter, current, 0)
   local children = {}
   for _, item in ipairs(matches) do
     local selected = item.action == current
@@ -409,7 +626,7 @@ end
 local function inspectorBody()
   local body = {
     ui.label({ text = "ACTION INSPECTOR", fontSize = 10, fontWeight = "medium", color = "on_surface_variant" }),
-    ui.label({ text = editor.inspectorTitle(selectedDevice, selectedControl, selectedIndex), fontSize = 16, fontWeight = "bold" }),
+    ui.label({ text = editor.inspectorTitle(selectedDevice, selectedControl, selectedIndex, status.wave), fontSize = 16, fontWeight = "bold" }),
   }
 
   if selectedDevice == "wave" then
@@ -468,6 +685,8 @@ local function inspectorBody()
     else
       consider(lights[selectedLight])
     end
+    lightBrightness = brightness
+    lightKelvin = kelvin
     table.insert(body, ui.label({
       text = reachable and (on and "ON · REACHABLE" or "OFF · REACHABLE") or "UNAVAILABLE",
       fontSize = 9,
@@ -478,26 +697,32 @@ local function inspectorBody()
       ui.button({ text = "On", enabled = reachable, onClick = function() runHelper(editor.lightsArgv(helper, "on", target), refresh) end }),
       ui.button({ text = "Off", enabled = reachable, onClick = function() runHelper(editor.lightsArgv(helper, "off", target), refresh) end }),
     }))
-    table.insert(body, ui.label({ text = "BRIGHTNESS " .. tostring(brightness) .. "%", fontSize = 9, color = "on_surface_variant" }))
+    table.insert(body, ui.label({ text = "BRIGHTNESS " .. tostring(lightBrightness) .. "%", fontSize = 9, color = "on_surface_variant" }))
     table.insert(body, ui.slider({
       min = 1,
       max = 100,
       step = 1,
-      value = brightness,
+      value = lightBrightness,
       enabled = reachable,
-      onDragEnd = function(value)
-        runHelper(editor.lightsArgv(helper, "brightness", target, tonumber(value) or brightness), refresh)
+      onChange = function(value)
+        lightBrightness = tonumber(value) or lightBrightness
+      end,
+      onDragEnd = function()
+        runHelper(editor.lightsArgv(helper, "brightness", target, lightBrightness), refresh)
       end,
     }))
-    table.insert(body, ui.label({ text = "TEMPERATURE " .. tostring(kelvin) .. "K", fontSize = 9, color = "on_surface_variant" }))
+    table.insert(body, ui.label({ text = "TEMPERATURE " .. tostring(lightKelvin) .. "K", fontSize = 9, color = "on_surface_variant" }))
     table.insert(body, ui.slider({
       min = 2900,
       max = 7000,
       step = 100,
-      value = kelvin,
+      value = lightKelvin,
       enabled = reachable,
-      onDragEnd = function(value)
-        runHelper(editor.lightsArgv(helper, "temperature", target, tonumber(value) or kelvin), refresh)
+      onChange = function(value)
+        lightKelvin = tonumber(value) or lightKelvin
+      end,
+      onDragEnd = function()
+        runHelper(editor.lightsArgv(helper, "temperature", target, lightKelvin), refresh)
       end,
     }))
     table.insert(body, ui.button({
@@ -572,7 +797,30 @@ local function inspector()
   }, body)
 end
 
-function tree()
+local function connectionLabel()
+  if not caps().connected then
+    return "Disconnected"
+  end
+  local parts = {}
+  if type(status.classic) == "table" then
+    table.insert(parts, status.classic.product or "Stream Deck")
+  end
+  if type(status.plus) == "table" then
+    table.insert(parts, status.plus.product or "Stream Deck +")
+  end
+  if type(status.pedal) == "table" then
+    table.insert(parts, status.pedal.product or "Pedal")
+  end
+  if type(status.wave) == "table" then
+    table.insert(parts, status.wave.product or "Wave")
+  end
+  if #parts == 0 then
+    return "Connected"
+  end
+  return table.concat(parts, " · ")
+end
+
+tree = function()
   local connected = caps().connected
   return ui.column({ flexGrow = 1, gap = 14, align = "stretch" }, {
     ui.row({ align = "center", justify = "space_between", gap = 8 }, {
@@ -584,7 +832,7 @@ function tree()
         }),
       }),
       ui.label({
-        text = connected and "Connected" or "Disconnected",
+        text = connectionLabel(),
         color = connected and "primary" or "on_surface_variant",
         fontSize = 11,
       }),

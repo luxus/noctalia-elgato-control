@@ -18,6 +18,14 @@ check("disconnected tabs include classic", tabsOff[1] == "classic")
 check("disconnected tabs include plus", tabsOff[2] == "plus")
 check("disconnected has no pedal/wave/lights", #tabsOff == 2)
 
+local dual = editor.deviceTabs(editor.capabilities({
+	plus = { product = "Stream Deck +", keys = 8 },
+	classic = { product = "Stream Deck Mk.2", keys = 15 },
+}))
+check("dual-deck classic tab", dual[1] == "classic")
+check("dual-deck plus tab", dual[2] == "plus")
+check("dual-deck does not drop a deck", #dual == 2)
+
 -- Daemon status uses objects, not booleans.
 local capsOn = editor.capabilities({
 	plus = { product = "Stream Deck +", keys = 8 },
@@ -117,8 +125,20 @@ check("unknown current is injected", missing[1].action == "app:obs.desktop")
 check("title classic", editor.inspectorTitle("classic", "key", 4) == "Classic key 4")
 check("title plus dial", editor.inspectorTitle("plus", "dial", 2) == "Plus dial 2")
 check("title pedal", editor.inspectorTitle("pedal", "pedal", 1) == "Left pedal")
-check("title wave", editor.inspectorTitle("wave", "key", 0) == "Wave:3")
+check("title wave", editor.inspectorTitle("wave", "key", 0) == "Wave")
+check("title wave product", editor.inspectorTitle("wave", "key", 0, { product = "Wave XLR" }) == "Wave XLR")
+check("tab label wave product", editor.tabLabel("wave", "Wave XLR") == "Wave XLR")
 check("kelvin from mireds", editor.kelvin(200) == 5000)
+
+check("wave only is connected", editor.capabilities({ wave = { product = "Wave XLR" } }).connected)
+check("wave only tab", editor.deviceTabs(editor.capabilities({ wave = { product = "Wave XLR" } }))[1] == "wave")
+
+local many = {}
+for i = 1, 120 do
+	table.insert(many, { action = "app:" .. tostring(i), label = "App " .. tostring(i) })
+end
+check("limit 0 is uncapped", #editor.filterCatalog(many, "", nil, 0) == 120)
+check("explicit 80 still caps", #editor.filterCatalog(many, "", nil, 80) == 80)
 
 if failed > 0 then
 	error(string.format("%d editor checks failed", failed))
