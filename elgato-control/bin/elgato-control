@@ -1208,13 +1208,15 @@ def perform_wave_action(wave, action):
     if not wave:
         raise RuntimeError("Wave:3 / Wave XLR is not connected")
     card = wave.get("card")
+    xlr = wave.get("model") == "wave_xlr"
     gain_ctl = wave.get("gainControl") or WAVE_ALSA_GAIN[0]
     mute_ctl = wave.get("muteControl") or WAVE_ALSA_MUTE[0]
     hp_ctl = wave.get("headphoneControl") or WAVE_ALSA_HEADPHONE[0]
     hp_mute_ctl = wave.get("headphoneMuteControl") or WAVE_ALSA_HEADPHONE_MUTE[0]
 
     def with_alsa_or_pipewire(alsa_call, pipewire_call):
-        if card is not None:
+        # Wave XLR (0x007d) has no Mic Capture Volume. Never amixer that path.
+        if card is not None and not xlr:
             try:
                 alsa_call()
                 return
@@ -1228,13 +1230,10 @@ def perform_wave_action(wave, action):
             lambda: wpctl_adjust(wave.get("sourceId"), delta=5),
         )
     elif action == "wave_gain_down":
-        if card is not None:
-            try:
-                set_alsa_control(card, gain_ctl, max(0, int(wave.get("gainRaw") or 0) - 2))
-                return
-            except RuntimeError:
-                pass
-        wpctl_adjust(wave.get("sourceId"), delta=-5)
+        with_alsa_or_pipewire(
+            lambda: set_alsa_control(card, gain_ctl, max(0, int(wave.get("gainRaw") or 0) - 2)),
+            lambda: wpctl_adjust(wave.get("sourceId"), delta=-5),
+        )
     elif action == "wave_mute":
         with_alsa_or_pipewire(
             lambda: set_alsa_control(card, mute_ctl, "toggle"),
