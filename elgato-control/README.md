@@ -48,9 +48,20 @@ Key Lights only show in the panel when that device is present.
 Python ctypes does not search the Nix store unless the library is on the loader
 path. This plugin does **not** require nix-ld.
 
-`service.luau` exports the plugin setting **hidapi library path** as
-`ELGATO_HIDAPI` when the daemon starts. You can also set `ELGATO_HIDAPI` (or
-`HIDAPI_PATH`) yourself to the absolute `libhidapi-hidraw.so.0` path.
+`service.luau` always exports `ELGATO_HIDAPI` when the daemon starts. The
+**hidapi library path** setting overrides that; otherwise the plugin uses
+`ELGATO_HIDAPI` from the Noctalia environment, then
+`/run/current-system/sw/lib/libhidapi-hidraw.so.0`. You do not need to fill the
+setting on lea. You can still set `ELGATO_HIDAPI` (or `HIDAPI_PATH`) yourself.
+
+The service only restarts when `processMatches` finds no `elgato-control daemon`.
+Panel `status` / `set-key` CLI processes are ignored. A second daemon refuses
+the hidraw lock instead of opening Classic and Plus out from under the owner.
+A leftover OpenDeck process is still a blocker (hidraw is exclusive) — stop it
+in the session; the daemon does not kill other processes.
+
+Failed hidapi loads and failed `hid_open_path` calls are written to
+`status.error`. One deck failing to open does not drop the other.
 
 Typical NixOS locations, in the order the CLI tries them after those overrides:
 

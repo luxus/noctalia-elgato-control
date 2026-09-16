@@ -2,7 +2,7 @@
 """HID daemon for Elgato Stream Deck hardware on Noctalia v5."""
 from __future__ import annotations
 
-import argparse, ctypes, hashlib, ipaddress, json, os, pathlib, re, shutil, signal, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import argparse, ctypes, ctypes.util, fcntl, hashlib, ipaddress, json, os, pathlib, re, shutil, signal, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 
 VID = 0x0FD9
 PLUS, PEDAL = 0x0084, 0x0086
@@ -88,6 +88,7 @@ STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".lo
 LEGACY_CONFIG = pathlib.Path(os.environ.get("XDG_CONFIG_HOME", pathlib.Path.home() / ".config")) / "omarchy-streamdeck"
 PROFILE = CONFIG / "profile.json"
 STATUS = STATE / "status.json"
+NIXOS_HIDAPI = "/run/current-system/sw/lib/libhidapi-hidraw.so.0"
 ICONS = ROOT / "assets" / "keys"
 KEY_CACHE = pathlib.Path(os.environ.get("XDG_CACHE_HOME", pathlib.Path.home() / ".cache")) / "elgato-control" / "keys"
 
@@ -158,6 +159,74 @@ def origin_index(key, cols=5):
     return (key - col) + ((cols - 1) - col)
 
 
+class DaemonLocked(RuntimeError):
+    """A second elgato-control daemon must not steal exclusive hidraw nodes."""
+
+
+_DAEMON_LOCK_HANDLE = None
+
+
+def acquire_daemon_lock():
+    """Exclusive flock so a leftover start cannot open Classic and Plus out from under the owner."""
+    global _DAEMON_LOCK_HANDLE
+    STATE.mkdir(parents=True, exist_ok=True)
+    handle = open(STATE / "daemon.lock", "a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        handle.close()
+        raise DaemonLocked(
+            "elgato-control daemon already running; refusing a second hidraw owner"
+        ) from error
+    handle.seek(0)
+    handle.truncate()
+    handle.write("%d\n" % os.getpid())
+    handle.flush()
+    _DAEMON_LOCK_HANDLE = handle
+    return handle
+
+
+def hid_interface_rank(interface_number):
+    try:
+        iface = int(interface_number)
+    except (TypeError, ValueError):
+        return 1
+    if iface in (0, -1):
+        return 0
+    return 1 + max(0, iface)
+
+
+def decode_hid_string(value):
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return str(value)
+
+
+def group_hid_devices(entries):
+    """One row per (productId, serial). Classic and Plus stay separate. Prefer interface 0."""
+    best, order = {}, []
+    for entry in entries:
+        key = (entry["productId"], entry.get("serial") or "")
+        if key not in best:
+            row = dict(entry)
+            row.setdefault("alternates", [])
+            best[key] = row
+            order.append(key)
+            continue
+        current = best[key]
+        new_rank = hid_interface_rank(entry.get("interface", -1))
+        old_rank = hid_interface_rank(current.get("interface", -1))
+        if new_rank < old_rank:
+            row = dict(entry)
+            row["alternates"] = list(current.get("alternates") or []) + [current["path"]]
+            best[key] = row
+        else:
+            current.setdefault("alternates", []).append(entry["path"])
+    return [best[key] for key in order]
+
+
 class DeviceInfo(ctypes.Structure):
     pass
 
@@ -174,26 +243,39 @@ DeviceInfo._fields_ = [
 
 def hidapi_candidates():
     extra = os.environ.get("ELGATO_HIDAPI") or os.environ.get("HIDAPI_PATH")
-    names = [
-        extra,
+    names = []
+
+    def add(name):
+        if name and name not in names:
+            names.append(name)
+
+    add(extra)
+    try:
+        add(ctypes.util.find_library("hidapi-hidraw"))
+    except (OSError, AttributeError, ValueError):
+        pass
+    for soname in (
         "libhidapi-hidraw.so.0", "libhidapi-hidraw.so",
         "libhidapi.so.0", "libhidapi.so",
-        "/run/current-system/sw/lib/libhidapi-hidraw.so.0",
+        NIXOS_HIDAPI,
         "/usr/lib/libhidapi-hidraw.so.0",
         "/usr/lib64/libhidapi-hidraw.so.0",
         "/usr/lib/x86_64-linux-gnu/libhidapi-hidraw.so.0",
         "/usr/lib/aarch64-linux-gnu/libhidapi-hidraw.so.0",
-    ]
-    return [n for n in names if n]
+    ):
+        add(soname)
+    return names
 
 
 class Hid:
     def __init__(self):
         self.lib = None
+        self.backend = None
         last_error = None
         for name in hidapi_candidates():
             try:
                 self.lib = ctypes.CDLL(name)
+                self.backend = name
                 break
             except OSError as error:
                 last_error = error
@@ -209,39 +291,63 @@ class Hid:
         self.lib.hid_send_feature_report.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_size_t]
         self.lib.hid_write.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte), ctypes.c_size_t]
         self.lib.hid_close.argtypes = [ctypes.c_void_p]
+        try:
+            self.lib.hid_error.argtypes = [ctypes.c_void_p]
+            self.lib.hid_error.restype = ctypes.c_wchar_p
+        except Exception:
+            pass
         self.lib.hid_init()
 
+    def last_error(self, handle=None):
+        fn = getattr(self.lib, "hid_error", None)
+        if not fn:
+            return ""
+        try:
+            message = fn(handle)
+        except OSError:
+            return ""
+        return message or ""
+
     def paths(self):
-        out, seen, head = [], set(), self.lib.hid_enumerate(VID, 0)
-        cur = head
-        while cur:
-            i = cur.contents
-            spec = DEVICE_SPECS.get(i.product_id)
-            if spec:
-                serial = i.serial_number or ""
-                key = (i.product_id, serial)
-                if key not in seen:
-                    seen.add(key)
-                    out.append({
-                        "path": i.path.decode(),
-                        "productId": i.product_id,
-                        "serial": serial,
-                        "product": i.product_string or spec["name"],
+        head = self.lib.hid_enumerate(VID, 0)
+        try:
+            entries = []
+            cur = head
+            while cur:
+                info = cur.contents
+                spec = DEVICE_SPECS.get(info.product_id)
+                path = decode_hid_string(info.path)
+                if spec and path:
+                    entries.append({
+                        "path": path,
+                        "productId": info.product_id,
+                        "serial": decode_hid_string(info.serial_number),
+                        "product": decode_hid_string(info.product_string) or spec["name"],
                         "kind": spec["kind"],
                         "family": spec.get("family", spec["kind"]),
                         "capabilities": spec["capabilities"],
                         "spec": spec,
+                        "interface": int(info.interface_number),
                     })
-            cur = i.next
-        if head:
-            self.lib.hid_free_enumeration(head)
-        return out
+                cur = info.next
+            return group_hid_devices(entries)
+        finally:
+            if head:
+                self.lib.hid_free_enumeration(head)
 
     def open(self, path):
-        dev = self.lib.hid_open_path(path.encode())
-        if dev:
-            self.lib.hid_set_nonblocking(dev, 1)
-        return dev
+        if not path:
+            return None
+        encoded = path if isinstance(path, bytes) else path.encode()
+        handle = self.lib.hid_open_path(encoded)
+        if not handle:
+            return None
+        self.lib.hid_set_nonblocking(handle, 1)
+        return handle
+
+    def close(self, handle):
+        if handle:
+            self.lib.hid_close(handle)
 
     def read(self, dev):
         buf = (ctypes.c_ubyte * 1024)()
@@ -1022,7 +1128,8 @@ def parse_key_report(data, spec):
 
 class Daemon:
     def __init__(self):
-        self.hid, self.devices, self.previous = Hid(), {}, {}
+        self.hid = None
+        self.devices, self.previous = {}, {}
         self.profile, self.mtime = load_profile(), PROFILE.stat().st_mtime
         self.brightness = int(self.profile.get("brightness", 55))
         self.light_states = []
@@ -1036,6 +1143,10 @@ class Daemon:
             "lights": [], "devices": [], "recentReports": {},
             "lastAction": "", "lastEvent": "", "error": "", "updatedAt": int(time.time()),
         }
+        try:
+            self.hid = Hid()
+        except RuntimeError as error:
+            self.status["error"] = str(error)
 
     def keys_for(self, spec):
         if spec.get("kind") == "classic":
@@ -1118,19 +1229,20 @@ class Daemon:
         except (OSError, subprocess.SubprocessError) as error:
             self.status["error"] = "LCD: " + str(error)
 
-    def connect(self):
-        found = self.hid.paths()
-        live = {x["path"] for x in found}
-        for path in list(self.devices):
-            if path not in live:
-                self.hid.lib.hid_close(self.devices.pop(path)["handle"])
-        for info in found:
-            if info["path"] not in self.devices:
-                handle = self.hid.open(info["path"])
-                if handle:
-                    device = dict(info, handle=handle)
-                    self.devices[info["path"]] = device
-                    self.decorate(device)
+    def _open_device(self, info):
+        candidates = [info["path"]] + [path for path in (info.get("alternates") or []) if path]
+        seen = set()
+        for path in candidates:
+            if path in seen:
+                continue
+            seen.add(path)
+            handle = self.hid.open(path)
+            if handle:
+                info["path"] = path
+                return handle
+        return None
+
+    def _publish_device_summary(self):
         summary = {}
         for device in self.devices.values():
             spec = device["spec"]
@@ -1152,6 +1264,48 @@ class Daemon:
                 "count": len([x for x in self.status["lights"] if x.get("reachable")]),
             })
         self.status["devices"] = devices
+
+    def connect(self):
+        """Open every present HID device. Classic 15-key and Stream Deck + must both stay open."""
+        if self.hid is None:
+            try:
+                self.hid = Hid()
+                if str(self.status.get("error") or "").startswith("hidapi"):
+                    self.status["error"] = ""
+            except RuntimeError as error:
+                self.status["error"] = str(error)
+                self._publish_device_summary()
+                return
+        found = self.hid.paths()
+        live = {item["path"] for item in found}
+        for item in found:
+            live.update(item.get("alternates") or [])
+        for path in list(self.devices):
+            if path not in live:
+                try:
+                    self.hid.close(self.devices.pop(path)["handle"])
+                except OSError:
+                    self.devices.pop(path, None)
+        open_errors = []
+        for info in found:
+            if info["path"] in self.devices:
+                continue
+            handle = self._open_device(info)
+            if handle:
+                device = dict(info, handle=handle)
+                self.devices[info["path"]] = device
+                try:
+                    self.decorate(device)
+                except (OSError, ValueError) as error:
+                    self.status["error"] = "HID decorate: " + str(error)
+            else:
+                reason = self.hid.last_error() or "hid_open_path failed"
+                open_errors.append("%s (%s): %s" % (info["path"], info.get("kind") or "deck", reason))
+        if open_errors:
+            self.status["error"] = "HID open failed: " + "; ".join(open_errors)
+        elif str(self.status.get("error") or "").startswith("HID open failed"):
+            self.status["error"] = ""
+        self._publish_device_summary()
 
     def act(self, action):
         if not action or action == "none":
@@ -1335,6 +1489,8 @@ class Daemon:
             except (OSError, ValueError, json.JSONDecodeError) as error:
                 self.status["error"] = "Profile: " + str(error)
             for device in list(self.devices.values()):
+                if not self.hid:
+                    break
                 data = self.hid.read(device["handle"])
                 if data:
                     self.status["recentReports"][device["kind"]] = {"hex": data.hex(), "length": len(data), "at": int(time.time())}
@@ -1345,7 +1501,8 @@ class Daemon:
                 last_status = now
             time.sleep(.025)
         for device in self.devices.values():
-            self.hid.lib.hid_close(device["handle"])
+            if self.hid:
+                self.hid.close(device["handle"])
         self.status["running"] = False
         write_status(self.status)
 
@@ -1439,7 +1596,13 @@ def main():
         }
         print(json.dumps(data) if args.json else json.dumps(data, indent=2))
         return
+    try:
+        lock_handle = acquire_daemon_lock()
+    except DaemonLocked as error:
+        print(error, file=sys.stderr)
+        raise SystemExit(1) from error
     daemon = Daemon()
+    daemon.lock_handle = lock_handle
     signal.signal(signal.SIGTERM, lambda *_: setattr(daemon, "running", False))
     signal.signal(signal.SIGINT, lambda *_: setattr(daemon, "running", False))
     daemon.loop()

@@ -6,7 +6,7 @@
     },
     "hidapi_path": {
       "label": "hidapi library path",
-      "description": "Optional absolute path to libhidapi-hidraw.so. On NixOS set this if ctypes cannot find the library."
+      "description": "Optional absolute path to libhidapi-hidraw.so. Leave empty on NixOS; the daemon uses /run/current-system/sw/lib/libhidapi-hidraw.so.0."
     },
     "show_label": {
       "label": "Show bar label",

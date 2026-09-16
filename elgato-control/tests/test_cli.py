@@ -179,6 +179,47 @@ class CliTests(unittest.TestCase):
         self.assertTrue(any(item["value"] == "niri_close" for item in parsed_catalog))
         self.assertTrue(any(item["value"] == "none" for item in parsed_catalog))
 
+    def test_second_daemon_exits_without_overwriting_status(self):
+        status_path = self.state / "elgato-control" / "status.json"
+        holder = """
+import fcntl, os, pathlib, sys, time
+state = pathlib.Path(os.environ["XDG_STATE_HOME"]) / "elgato-control"
+state.mkdir(parents=True, exist_ok=True)
+lock = open(state / "daemon.lock", "a+")
+fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+status = state / "status.json"
+status.write_text('{"running": true, "classic": {"kind": "classic"}, "plus": {"kind": "plus"}}\\n')
+sys.stdout.write("locked\\n")
+sys.stdout.flush()
+time.sleep(20)
+"""
+        env = os.environ.copy()
+        env["XDG_CONFIG_HOME"] = str(self.config)
+        env["XDG_STATE_HOME"] = str(self.state)
+        env["XDG_CACHE_HOME"] = str(self.config / "cache")
+        proc = subprocess.Popen(
+            [sys.executable, "-c", holder],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            line = proc.stdout.readline()
+            self.assertEqual("locked\n", line)
+            result = self.run_cli("daemon")
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("already running", result.stderr)
+            data = json.loads(status_path.read_text())
+            self.assertTrue(data["running"])
+            self.assertEqual("classic", data["classic"]["kind"])
+            self.assertEqual("plus", data["plus"]["kind"])
+        finally:
+            proc.kill()
+            proc.stdout.close()
+            proc.stderr.close()
+            proc.wait(timeout=5)
+
 
 if __name__ == "__main__":
     unittest.main()

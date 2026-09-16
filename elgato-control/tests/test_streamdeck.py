@@ -371,6 +371,185 @@ class ProtocolEncodeTests(unittest.TestCase):
         self.assertEqual([0x02, 0x0B, 0, 0, 1016 & 255, 1016 >> 8, 0, 0], hid.writes[0][:8])
         self.assertEqual(1, hid.writes[-1][3])
         self.assertEqual(1024, len(hid.writes[0]))
+        self.assertNotEqual(0x0C, hid.writes[0][1])
+
+
+class DualOpenAndDiscoveryTests(unittest.TestCase):
+    def classic_info(self, path="/dev/hidraw0", interface=0):
+        spec = module.DEVICE_SPECS[0x0080]
+        return {
+            "path": path, "productId": 0x0080, "serial": "CLASSIC",
+            "product": spec["name"], "kind": "classic", "family": "classic",
+            "capabilities": spec["capabilities"], "spec": spec, "interface": interface,
+            "alternates": [],
+        }
+
+    def plus_info(self, path="/dev/hidraw1", interface=0):
+        spec = module.DEVICE_SPECS[module.PLUS]
+        return {
+            "path": path, "productId": module.PLUS, "serial": "PLUS",
+            "product": spec["name"], "kind": "plus", "family": "plus",
+            "capabilities": spec["capabilities"], "spec": spec, "interface": interface,
+            "alternates": [],
+        }
+
+    def pedal_info(self, path="/dev/hidraw2"):
+        spec = module.DEVICE_SPECS[module.PEDAL]
+        return {
+            "path": path, "productId": module.PEDAL, "serial": "PEDAL",
+            "product": spec["name"], "kind": "pedal", "family": "pedal",
+            "capabilities": spec["capabilities"], "spec": spec, "interface": 0,
+            "alternates": [],
+        }
+
+    def daemon(self, hid):
+        daemon = module.Daemon.__new__(module.Daemon)
+        daemon.hid = hid
+        daemon.devices = {}
+        daemon.previous = {}
+        daemon.profile = module.normalize_profile({})
+        daemon.brightness = 55
+        daemon.light_states = []
+        daemon.status = {"error": "", "lights": []}
+        daemon.lcd_signature = None
+        return daemon
+
+    def fake_hid(self, found, opens=None):
+        hid = mock.Mock()
+        hid.paths.return_value = found
+        opened = []
+
+        def open_path(path):
+            opened.append(path)
+            if opens is None:
+                return "handle:%s" % path
+            return opens.get(path)
+
+        hid.open.side_effect = open_path
+        hid.close = mock.Mock()
+        hid.last_error.return_value = "Device or resource busy"
+        hid.write.return_value = 1024
+        hid.feature.return_value = 32
+        hid._opened = opened
+        return hid
+
+    def test_group_hid_devices_keeps_classic_and_plus(self):
+        grouped = module.group_hid_devices([
+            self.classic_info("/dev/hidraw0", 3),
+            self.classic_info("/dev/hidraw0b", 0),
+            self.plus_info("/dev/hidraw1", 0),
+        ])
+        kinds = {row["kind"] for row in grouped}
+        self.assertEqual({"classic", "plus"}, kinds)
+        classic = next(row for row in grouped if row["kind"] == "classic")
+        self.assertEqual("/dev/hidraw0b", classic["path"])
+        self.assertIn("/dev/hidraw0", classic["alternates"])
+
+    def test_connect_opens_classic_and_plus_together(self):
+        found = [self.classic_info(), self.plus_info()]
+        hid = self.fake_hid(found)
+        daemon = self.daemon(hid)
+        decorated = []
+        daemon.decorate = decorated.append
+        with mock.patch.object(module, "detect_wave", return_value=None):
+            daemon.connect()
+        self.assertEqual(["/dev/hidraw0", "/dev/hidraw1"], hid._opened)
+        self.assertEqual(2, len(daemon.devices))
+        self.assertEqual("classic", daemon.status["classic"]["kind"])
+        self.assertEqual("plus", daemon.status["plus"]["kind"])
+        self.assertEqual(15, daemon.status["classic"]["keys"])
+        self.assertEqual(8, daemon.status["plus"]["keys"])
+        self.assertIn("dials", daemon.status["plus"]["capabilities"])
+        self.assertEqual({"classic", "plus"}, {item["kind"] for item in daemon.status["devices"]})
+        self.assertEqual({"classic", "plus"}, {item["kind"] for item in decorated})
+        self.assertEqual("", daemon.status["error"] or "")
+
+    def test_connect_opens_pedal_without_artwork_and_keeps_decks(self):
+        hid = self.fake_hid([self.classic_info(), self.plus_info(), self.pedal_info()])
+        daemon = self.daemon(hid)
+        with mock.patch.object(module, "detect_wave", return_value=None):
+            daemon.connect()
+        self.assertEqual(3, len(daemon.devices))
+        self.assertEqual("pedal", daemon.status["pedal"]["kind"])
+        kinds = [item["kind"] for item in daemon.status["devices"]]
+        self.assertEqual(["classic", "plus", "pedal"], kinds)
+
+    def test_open_failure_is_recorded_and_does_not_drop_the_other_deck(self):
+        found = [self.classic_info(), self.plus_info()]
+        hid = self.fake_hid(found, opens={"/dev/hidraw0": "classic-handle", "/dev/hidraw1": None})
+        daemon = self.daemon(hid)
+        daemon.decorate = mock.Mock()
+        with mock.patch.object(module, "detect_wave", return_value=None):
+            daemon.connect()
+        self.assertIn("/dev/hidraw0", daemon.devices)
+        self.assertNotIn("/dev/hidraw1", daemon.devices)
+        self.assertIsNotNone(daemon.status["classic"])
+        self.assertIsNone(daemon.status["plus"])
+        self.assertIn("HID open failed", daemon.status["error"])
+        self.assertIn("/dev/hidraw1", daemon.status["error"])
+        self.assertIn("plus", daemon.status["error"])
+
+    def test_open_failure_when_no_device_opens_sets_status_error(self):
+        hid = self.fake_hid([self.classic_info(), self.plus_info()], opens={"/dev/hidraw0": None, "/dev/hidraw1": None})
+        daemon = self.daemon(hid)
+        with mock.patch.object(module, "detect_wave", return_value=None):
+            daemon.connect()
+        self.assertEqual({}, daemon.devices)
+        self.assertIn("HID open failed", daemon.status["error"])
+        self.assertIn("Device or resource busy", daemon.status["error"])
+        self.assertIsNone(daemon.status["classic"])
+        self.assertIsNone(daemon.status["plus"])
+
+    def test_open_retries_alternate_interface_path(self):
+        info = self.classic_info("/dev/hidraw-bad", 3)
+        info["alternates"] = ["/dev/hidraw-good"]
+        hid = self.fake_hid([info], opens={"/dev/hidraw-bad": None, "/dev/hidraw-good": "ok"})
+        daemon = self.daemon(hid)
+        daemon.decorate = mock.Mock()
+        with mock.patch.object(module, "detect_wave", return_value=None):
+            daemon.connect()
+        self.assertIn("/dev/hidraw-good", daemon.devices)
+        self.assertEqual("ok", daemon.devices["/dev/hidraw-good"]["handle"])
+
+    def test_hid_open_returns_none_without_nonblocking(self):
+        hid = module.Hid.__new__(module.Hid)
+        hid.lib = mock.Mock()
+        hid.lib.hid_open_path.return_value = None
+        self.assertIsNone(hid.open("/dev/hidraw0"))
+        hid.lib.hid_set_nonblocking.assert_not_called()
+
+    def test_hid_open_empty_path_is_a_fail(self):
+        hid = module.Hid.__new__(module.Hid)
+        hid.lib = mock.Mock()
+        self.assertIsNone(hid.open(""))
+        hid.lib.hid_open_path.assert_not_called()
+
+    def test_connect_without_hidapi_records_error(self):
+        daemon = self.daemon(None)
+        with mock.patch.object(module, "Hid", side_effect=RuntimeError("hidapi-hidraw is not installed")), \
+             mock.patch.object(module, "detect_wave", return_value=None):
+            daemon.connect()
+        self.assertIn("hidapi-hidraw", daemon.status["error"])
+        self.assertIsNone(daemon.status["classic"])
+        self.assertIsNone(daemon.status["plus"])
+
+    def test_second_lock_does_not_kill_the_owner(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(module, "STATE", pathlib.Path(directory)):
+                first = module.acquire_daemon_lock()
+                try:
+                    with self.assertRaises(module.DaemonLocked):
+                        module.acquire_daemon_lock()
+                finally:
+                    first.close()
+                second = module.acquire_daemon_lock()
+                second.close()
+
+    def test_nixos_hidapi_is_always_a_candidate(self):
+        self.assertEqual("/run/current-system/sw/lib/libhidapi-hidraw.so.0", module.NIXOS_HIDAPI)
+        env = {key: value for key, value in os.environ.items() if key not in ("ELGATO_HIDAPI", "HIDAPI_PATH")}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertIn(module.NIXOS_HIDAPI, module.hidapi_candidates())
 
 
 if __name__ == "__main__":

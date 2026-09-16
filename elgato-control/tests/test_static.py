@@ -83,6 +83,9 @@ class FixtureTests(unittest.TestCase):
         service = (PLUGIN / "service.luau").read_text()
         self.assertIn("ELGATO_HIDAPI", service)
         self.assertIn("hidapi_path", service)
+        self.assertIn("elgato-control daemon", service)
+        self.assertIn("/run/current-system/sw/lib/libhidapi-hidraw.so.0", service)
+        self.assertNotIn(', "elgato-control")', service)
         for name, functions in LUAU_FILES.items():
             text = (PLUGIN / name).read_text()
             self.assertTrue(text.startswith("--!nonstrict"), name)

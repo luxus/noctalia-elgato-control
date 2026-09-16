@@ -48,7 +48,7 @@ Unplug and replug the deck. `TAG+="uaccess"` covers a seated session.
 
 ### hidapi
 
-If ctypes cannot find hidapi, set the plugin setting **hidapi library path** to the absolute `libhidapi-hidraw.so.0` path (or export `ELGATO_HIDAPI`). Typical NixOS location: `/run/current-system/sw/lib/libhidapi-hidraw.so.0` when `hidapi` is in `environment.systemPackages`.
+The plugin daemon exports `ELGATO_HIDAPI` to nixpkgs `libhidapi-hidraw.so.0` (`/run/current-system/sw/lib/libhidapi-hidraw.so.0`) without filling **hidapi library path**. Override that setting only if ctypes still cannot load hidapi. A leftover OpenDeck process can hold hidraw exclusive — stop it; do not run two daemons.
 
 ## Visual editor
 

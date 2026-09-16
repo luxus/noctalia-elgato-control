@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Single hidraw owner: `elgato-control daemon` flock, `processMatches` needle `elgato-control daemon`, default NixOS `ELGATO_HIDAPI` without filling the plugin setting. Failed hidapi load and `hid_open_path` land in `status.error`. Classic 15-key and Stream Deck + stay open together; one busy node does not drop the other. OpenDeck leftovers are reported, not killed.
+
 ## 1.1.0
 
 Visual editor and action-mapping release for lea (NixOS, `x86_64-linux`, Noctalia v5 `plugin_api` 24). Tag this as `v1.1.0`. Do not treat 1.0.0 as a working editor.

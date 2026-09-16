@@ -1,5 +1,7 @@
 --!nonstrict
 local helper = (noctalia.pluginDir() or ".") .. "/bin/elgato-control"
+local NIXOS_HIDAPI = "/run/current-system/sw/lib/libhidapi-hidraw.so.0"
+local DAEMON_NEEDLE = "elgato-control daemon"
 
 local function statusPath()
   local xdg = type(noctalia.getenv) == "function" and noctalia.getenv("XDG_STATE_HOME") or nil
@@ -13,13 +15,27 @@ local function quote(path)
   return "'" .. tostring(path):gsub("'", "'\\''") .. "'"
 end
 
-local function daemonCommand()
+local function hidapiPath()
   local hid = noctalia.getConfig("hidapi_path")
-  local prefix = ""
   if type(hid) == "string" and hid ~= "" then
-    prefix = "ELGATO_HIDAPI=" .. quote(hid) .. " "
+    return hid
   end
-  return prefix .. quote(helper) .. " daemon"
+  local env = type(noctalia.getenv) == "function" and noctalia.getenv("ELGATO_HIDAPI") or nil
+  if type(env) == "string" and env ~= "" then
+    return env
+  end
+  return NIXOS_HIDAPI
+end
+
+local function daemonCommand()
+  -- Always export ELGATO_HIDAPI. The plugin shebang is not the flake wrapper.
+  -- Needle "elgato-control daemon" must appear unquoted in /proc cmdline, so
+  -- the helper is only quoted when the path is not a safe token.
+  local helperToken = helper
+  if not tostring(helper):match("^[%w%./_%-+]+$") then
+    helperToken = quote(helper)
+  end
+  return "ELGATO_HIDAPI=" .. quote(hidapiPath()) .. " " .. helperToken .. " daemon"
 end
 
 local function startDaemon()
@@ -64,11 +80,12 @@ end
 function update()
   noctalia.setUpdateInterval(2000)
   readStatus()
+  -- Needles are AND. Match the daemon argv, not panel status/set-key CLI.
   noctalia.processMatches(function(matched)
     if not matched then
       startDaemon()
     end
-  end, "elgato-control")
+  end, DAEMON_NEEDLE)
 end
 
 function onExit(_signal, _reason) end
