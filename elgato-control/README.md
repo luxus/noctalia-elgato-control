@@ -11,6 +11,7 @@ Darwin, macOS, aarch64, emily, zoe, or vanessa support.
 
 Install, udev, visual editor, and release notes: repository root
 [`README.md`](../README.md) and [`CHANGELOG.md`](../CHANGELOG.md).
+NixOS hidraw: `70-elgato-streamdeck.rules` via `udev.packages`, `MODE:="0660"`, no group `input`.
 
 ```bash
 noctalia msg plugins source add elgato git https://github.com/luxus/noctalia-elgato-control

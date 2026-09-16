@@ -19,7 +19,11 @@ Add the bar widget in Noctalia settings. Click it (or the Elgato shortcut) to op
 
 ### udev
 
-The plugin talks to Stream Deck hidraw nodes. Import this flake’s NixOS module (`services.udev.packages`, not `extraRules` — `uaccess` must load before `73-seat-late.rules`):
+The plugin talks to Stream Deck hidraw nodes on **lea** (`x86_64-linux`, niri). Import this flake’s NixOS module (`services.udev.packages`, not `extraRules` — `uaccess` must load before `73-seat-late.rules`).
+
+Rules are `SUBSYSTEM=="hidraw"` + `MODE:="0660"` + `TAG+="uaccess"`. They do **not** require group `input` (niri users are often not in that group).
+
+[luxusAi #143](https://github.com/luxus/luxusAi/pull/143) inlined older `GROUP="input"` extraRules onto lea. That copy is 99-local (too late for uaccess). Prefer this module; do not add `GROUP="input"` here to match lea.
 
 ```nix
 {
@@ -44,7 +48,7 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger
 ```
 
-Unplug and replug the deck. `TAG+="uaccess"` covers a seated session.
+Unplug and replug **both** Classic and Plus. Confirm both hidraw nodes are readable by the niri user.
 
 ### hidapi
 

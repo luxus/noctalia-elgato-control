@@ -39,6 +39,7 @@
       nixosModules.default = { pkgs, ... }: {
         # 70-*.rules via udev.packages: TAG+="uaccess" must run before 73-seat-late.
         # extraRules lands in 99-local.rules and would not grant hidraw access.
+        # lea (luxusAi #143) inlined GROUP="input" extraRules — do not copy that here.
         services.udev.packages = [
           (pkgs.writeTextFile {
             name = "70-elgato-streamdeck";
