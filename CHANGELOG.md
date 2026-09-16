@@ -21,6 +21,8 @@ flock instead of opening Classic and Plus out from under the owner; a failed
 
 Wave XLR never uses ALSA `Mic Capture Volume` even when `wpctl inspect` reports an ALSA card id; mute/volume stay on PipeWire.
 
+NixOS udev: `MODE:="0660"` without `GROUP="input"` so a niri seat can open Classic and Plus.
+
 ## 1.1.0
 
 Visual editor and action-mapping release for lea (NixOS, `x86_64-linux`, Noctalia v5 `plugin_api` 24). Tag this as `v1.1.0`. Do not treat 1.0.0 as a working editor.
