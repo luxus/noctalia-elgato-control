@@ -19,6 +19,8 @@ stay live controls from daemon status. A second daemon refuses the hidraw
 flock instead of opening Classic and Plus out from under the owner; a failed
 `hid_open_path` is recorded in `status.error` even when the other deck stays open.
 
+Wave XLR never uses ALSA `Mic Capture Volume` even when `wpctl inspect` reports an ALSA card id; mute/volume stay on PipeWire.
+
 ## 1.1.0
 
 Visual editor and action-mapping release for lea (NixOS, `x86_64-linux`, Noctalia v5 `plugin_api` 24). Tag this as `v1.1.0`. Do not treat 1.0.0 as a working editor.
