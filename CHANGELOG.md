@@ -7,7 +7,15 @@ Daemon / HID / NixOS: open Classic 15-key **and** Stream Deck + at the same time
 via PipeWire/ALSA (`wpctl` when XLR has no ALSA gain). Key Lights unchanged if
 present. hidapi lookup includes libusb + Nix profile paths. udev rules are
 `70-elgato-streamdeck.rules` installed with `services.udev.packages` so
-`TAG+="uaccess"` actually applies.
+`TAG+="uaccess"` actually applies. Plus LCD HID is report `0x02` / command
+`0x0C` (16-byte rectangle).
+
+Panel apply path: inspector catalog is uncapped and no longer walks XDG icon
+trees; status/profile are read from disk so `runAsync` slots stay free for
+`set-key` / `set-dial` / `set-pedal`; `set-key` requires `--device classic|plus`;
+service `processMatches` needle is the daemon, not every CLI. ImageMagick is
+found via the same NixOS bin extras as `search_path()`. Wave / Key Light tabs
+stay live controls from daemon status.
 
 ## 1.1.0
 

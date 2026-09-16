@@ -13,13 +13,20 @@ local function quote(path)
   return "'" .. tostring(path):gsub("'", "'\\''") .. "'"
 end
 
+local function helperPrefix()
+  if type(noctalia.commandExists) == "function" and noctalia.commandExists("python3") then
+    return "python3 "
+  end
+  return ""
+end
+
 local function daemonCommand()
   local hid = noctalia.getConfig("hidapi_path")
   local prefix = ""
   if type(hid) == "string" and hid ~= "" then
     prefix = "ELGATO_HIDAPI=" .. quote(hid) .. " "
   end
-  return prefix .. quote(helper) .. " daemon"
+  return prefix .. helperPrefix() .. quote(helper) .. " daemon"
 end
 
 local function startDaemon()
@@ -27,14 +34,20 @@ local function startDaemon()
 end
 
 local function publish(status)
-  local connected = status ~= nil and (status.classic ~= nil or status.plus ~= nil or status.pedal ~= nil)
+  local connected = status ~= nil and (
+    status.classic ~= nil or status.plus ~= nil or status.pedal ~= nil or status.wave ~= nil
+  )
   local product = ""
-  if status and status.classic then
+  if status and status.classic and status.plus then
+    product = (status.classic.product or "Stream Deck") .. " + " .. (status.plus.product or "Stream Deck +")
+  elseif status and status.classic then
     product = status.classic.product or "Stream Deck"
   elseif status and status.plus then
     product = status.plus.product or "Stream Deck +"
   elseif status and status.pedal then
     product = status.pedal.product or "Pedal"
+  elseif status and status.wave then
+    product = status.wave.product or "Wave"
   end
   noctalia.state.set("status", status or {})
   noctalia.state.set("connected", connected)
@@ -54,8 +67,15 @@ local function readStatus()
   end
 end
 
+local function initArgv()
+  if type(noctalia.commandExists) == "function" and noctalia.commandExists("python3") then
+    return { "python3", helper, "init" }
+  end
+  return { helper, "init" }
+end
+
 function onEnable()
-  noctalia.runAsync({ helper, "init" }, function(_result)
+  noctalia.runAsync(initArgv(), function(_result)
     startDaemon()
     readStatus()
   end)
@@ -68,7 +88,7 @@ function update()
     if not matched then
       startDaemon()
     end
-  end, "elgato-control")
+  end, "elgato-control daemon")
 end
 
 function onExit(_signal, _reason) end

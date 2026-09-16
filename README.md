@@ -53,7 +53,7 @@ If ctypes cannot find hidapi, set the plugin setting **hidapi library path** to 
 ## Visual editor
 
 1. Click the bar widget. You should see **Elgato Control**, device tabs, a key preview, and an **Action inspector**.
-2. Tabs appear from hardware: Stream Deck (15-key), Stream Deck + (LCD/dials when a Plus is present), Pedal, Wave:3 / Wave XLR, Key Lights. Classic and Plus stay open together. If nothing is plugged in you still get classic + Plus so you can edit the profile.
+2. Tabs appear from hardware: Stream Deck (15-key), Stream Deck + (LCD/dials when a Plus is present), Pedal, Wave:3 / Wave XLR, Key Lights. Classic and Plus stay open together (`classicKeys` vs `keys`). If nothing is plugged in you still get classic + Plus so you can edit the profile.
 3. Click a key, dial, or pedal on the preview.
 4. Filter the action list if you want, then click an action. It is written immediately (`set-key` / `set-dial` / `set-pedal`). There is no JSON-only editor in the panel.
 5. Press the physical key. It should run that mapping (niri workspace / close window, `noctalia msg` launcher / lock / volume / media / screenshot, or a `.desktop` app from NixOS `XDG_DATA_DIRS`).
@@ -74,9 +74,9 @@ elgato-control/bin/elgato-control set-dial 1 press volume_mute
 elgato-control/bin/elgato-control set-pedal 1 mic_mute
 ```
 
-Profile: `~/.config/elgato-control/profile.json`. `status --json` is the plugin contract.
+`--device` is required. Classic is 1–15 (`classicKeys`). Plus is 1–8 (`keys`) plus four dials. Omitting `--device` no longer writes Plus keys 1–8.
 
-Indexes are **1-based**. Classic is 1–15 (`classicKeys`). Plus is 1–8 (`keys`) plus four dials.
+Profile: `~/.config/elgato-control/profile.json`. `status --json` is the plugin contract.
 
 ## Tests
 
@@ -87,4 +87,4 @@ nix flake check   # x86_64-linux: same tests, luau-compile, editor.luau checks, 
 
 No Stream Deck or Noctalia shell is required in CI. Hardware verification is on lea.
 
-See [`elgato-control/README.md`](elgato-control/README.md) for device PIDs, hidapi notes, and protocol tests. See [`CHANGELOG.md`](CHANGELOG.md) for 1.0.0 vs 1.1.0.
+See [`elgato-control/README.md`](elgato-control/README.md) for device PIDs, hidapi notes, and protocol tests. See [`CHANGELOG.md`](CHANGELOG.md) for 1.0.0 vs 1.1.0 and Unreleased panel apply-path notes.

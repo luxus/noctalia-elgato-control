@@ -69,7 +69,7 @@ function editor.capabilities(status)
 		pedal = pedal,
 		wave = wave,
 		keylight = keylight,
-		connected = plus or classic or pedal,
+		connected = plus or classic or pedal or wave or keylight,
 	}
 end
 
@@ -98,12 +98,15 @@ function editor.deviceTabs(caps)
 	return tabs
 end
 
-function editor.tabLabel(id)
+function editor.tabLabel(id, product)
+	if id == "wave" and type(product) == "string" and product ~= "" then
+		return product
+	end
 	local labels = {
 		classic = "Stream Deck",
 		plus = "Stream Deck +",
 		pedal = "Pedal",
-		wave = "Wave:3",
+		wave = "Wave",
 		lights = "Key Lights",
 	}
 	return labels[id] or id
@@ -195,7 +198,9 @@ end
 
 function editor.filterCatalog(catalog, query, currentAction, limit)
 	catalog = catalog or {}
-	limit = limit or 80
+	if limit == nil then
+		limit = 0
+	end
 	query = string.lower(query or "")
 	local matches = {}
 	local seen = {}
@@ -207,7 +212,7 @@ function editor.filterCatalog(catalog, query, currentAction, limit)
 		end
 		seen[action] = true
 		table.insert(matches, { action = action, label = editor.shortLabel(item) })
-		return #matches >= limit
+		return limit > 0 and #matches >= limit
 	end
 
 	if currentAction ~= nil and currentAction ~= "" then
@@ -245,9 +250,12 @@ function editor.filterCatalog(catalog, query, currentAction, limit)
 	return matches
 end
 
-function editor.inspectorTitle(device, control, index)
+function editor.inspectorTitle(device, control, index, wave)
 	if device == "wave" then
-		return "Wave:3"
+		if type(wave) == "table" and type(wave.product) == "string" and wave.product ~= "" then
+			return wave.product
+		end
+		return "Wave"
 	end
 	if device == "lights" then
 		return "Key Light"
