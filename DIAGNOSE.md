@@ -12,6 +12,18 @@
 
 **Tests this pass:** `python3 -m unittest discover -s elgato-control/tests -v` → **65 OK, 1 skipped** (`luau-compile` absent). See [docs/REVIEW.md](docs/REVIEW.md) for what the suite does not cover.
 
+**Issues opened (do not close from this docs PR):**
+
+| Pri | Issue | Theme |
+| --- | --- | --- |
+| P0 | [#4](https://github.com/luxus/noctalia-elgato-control/issues/4) | Dual-deck daemon is not a single hidraw owner (hidapi + `processMatches` + silent open) |
+| P0 | [#5](https://github.com/luxus/noctalia-elgato-control/issues/5) | udev hidraw requires group `input`; niri seat may miss `uaccess` |
+| P0 | [#6](https://github.com/luxus/noctalia-elgato-control/issues/6) | Wave XLR (XLR dings) not detected; ALSA gain is Wave:3-only |
+| P1 | [#7](https://github.com/luxus/noctalia-elgato-control/issues/7) | Plus LCD / dual-deck key tiles blank without magick on plugin PATH |
+| P1 | [#8](https://github.com/luxus/noctalia-elgato-control/issues/8) | Panel mappings: catalog cap, refresh vs daemon, `set-key` device default |
+| P1 | [#9](https://github.com/luxus/noctalia-elgato-control/issues/9) | Key Light HTTP/mDNS stalls the HID loop for both decks |
+| P2 | [#10](https://github.com/luxus/noctalia-elgato-control/issues/10) | unittest misses dual-deck, Wave XLR, udev, daemon lifecycle, panel VM |
+
 ---
 
 ## Why 1.1.0 can still look dead "front and back"
