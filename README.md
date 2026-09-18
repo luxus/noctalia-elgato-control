@@ -60,7 +60,9 @@ If ctypes cannot find hidapi, set the plugin setting **hidapi library path** to 
 2. Tabs appear from hardware: Stream Deck (15-key), Stream Deck + (LCD/dials when a Plus is present), Pedal, Wave:3 / Wave XLR, Key Lights. Classic and Plus stay open together (`classicKeys` vs `keys`). If nothing is plugged in you still get classic + Plus so you can edit the profile.
 3. Click a key, dial, or pedal on the preview.
 4. Filter the action list if you want, then click an action. It is written immediately (`set-key` / `set-dial` / `set-pedal`). There is no JSON-only editor in the panel.
-5. Press the physical key. It should run that mapping (niri workspace / close window, `noctalia msg` launcher / lock / volume / media / screenshot, or a `.desktop` app from NixOS `XDG_DATA_DIRS`).
+5. Press the physical key. It should run that mapping (niri workspace / close window, `noctalia msg` launcher / lock / volume / media / screenshot, or a `.desktop` app from NixOS `XDG_DATA_DIRS`). App-mapped keys render the desktop `Icon=` onto the tile (gtk-icon-theme, then a bounded cache). Missing icons fall back to a text label.
+
+Plus LCD uses Elgato window JPEG `0x02`/`0x0B`. Partial `0x0C` flickered on lea and is not sent.
 
 Wave and Key Lights tabs are live controls (gain, mute, power, brightness, temperature), not key maps.
 

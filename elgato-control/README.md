@@ -35,7 +35,7 @@ noctalia msg plugins enable luxus/elgato-control
 | Stream Deck Mk.2 | `0x0080` | 15 keys, JPEG 72×72 rotated 180° |
 | Stream Deck Mk.2 Scissor | `0x00A5` | same protocol as Mk.2 |
 | Stream Deck 15-key module | `0x00B9` | same protocol as Mk.2 |
-| Stream Deck + | `0x0084` | 8 keys, 4 dials, 800×100 LCD; open **together** with a 15-key |
+| Stream Deck + | `0x0084` | 8 keys, 4 dials, 800×100 LCD (`0x02`/`0x0B` window JPEG); open **together** with a 15-key |
 | Stream Deck Pedal | `0x0086` | 3 pedals |
 | Key Light / Key Light Neo | mDNS `_elg._tcp` | grouped power, brightness, temperature |
 | Wave:3 | USB `0x0070` · PipeWire / ALSA | gain, mute, headphones, presets |

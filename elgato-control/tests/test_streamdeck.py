@@ -339,6 +339,23 @@ class ProtocolEncodeTests(unittest.TestCase):
         self.assertEqual([0x02, 0x07, 3, 1, 16, 0, 2, 0], hid.writes[-1][:8])
         self.assertEqual(list(payload[:1016]), hid.writes[0][8:8 + 1016])
 
+    def test_plus_key_image_pages_use_v2_jpeg_header_not_lcd(self):
+        hid = self.fake_hid()
+        daemon = self.daemon_with(hid)
+        spec = module.DEVICE_SPECS[module.PLUS]
+        payload = bytes(range(256)) * 8
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as handle:
+            handle.write(payload)
+            path = pathlib.Path(handle.name)
+        try:
+            with mock.patch.object(module, "rendered_key_image", return_value=path):
+                daemon.send_key_image("dev", spec, 0, {"action": "lock", "label": "Lock"})
+        finally:
+            path.unlink(missing_ok=True)
+        self.assertEqual([0x02, 0x07, 0, 0, 1016 & 255, 1016 >> 8, 0, 0], hid.writes[0][:8])
+        self.assertNotIn(0x0B, [row[1] for row in hid.writes])
+        self.assertNotIn(0x0C, [row[1] for row in hid.writes])
+
     def test_original_bmp_pages_mirror_columns_in_header(self):
         hid = self.fake_hid()
         daemon = self.daemon_with(hid)
@@ -370,8 +387,8 @@ class ProtocolEncodeTests(unittest.TestCase):
              mock.patch.object(module.subprocess, "run", side_effect=fake_run):
             daemon.update_lcd("dev", force=True)
         self.assertGreaterEqual(len(hid.writes), 2)
-        self.assertEqual([0x02, 0x0C, 0, 0, 0, 0, 800 & 255, 800 >> 8, 100, 0, 0, 0, 0, 1008 & 255, 1008 >> 8, 0], hid.writes[0][:16])
-        self.assertEqual(1, hid.writes[-1][10])
+        self.assertEqual([0x02, 0x0B, 0, 0, 1016 & 255, 1016 >> 8, 0, 0], hid.writes[0][:8])
+        self.assertEqual(1, hid.writes[-1][3])
         self.assertEqual(1024, len(hid.writes[0]))
 
     def test_lcd_finds_magick_via_search_path_which(self):
@@ -388,11 +405,48 @@ class ProtocolEncodeTests(unittest.TestCase):
             daemon.update_lcd("dev", force=True)
         finder.assert_called_with("magick", "convert")
         self.assertEqual(0x02, hid.writes[0][0])
-        self.assertEqual(0x0C, hid.writes[0][1])
+        self.assertEqual(0x0B, hid.writes[0][1])
 
     def test_resolve_icon_does_not_recursive_glob(self):
         with mock.patch.object(module.pathlib.Path, "glob", side_effect=AssertionError("no recursive glob")):
             self.assertEqual("", module.resolve_icon("missing-icon-name"))
+
+    def test_resolve_icon_finds_hicolor_png_and_caches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            icon_dir = root / "icons" / "hicolor" / "128x128" / "apps"
+            icon_dir.mkdir(parents=True)
+            png = icon_dir / "lea-app.png"
+            png.write_bytes(b"PNG")
+            module.ICON_CACHE.clear()
+            with mock.patch.object(module, "xdg_data_dirs", return_value=[root]), \
+                 mock.patch.object(module, "gtk_lookup_icon", return_value=""):
+                first = module.resolve_icon("lea-app")
+                second = module.resolve_icon("lea-app")
+            self.assertEqual(str(png), first)
+            self.assertEqual(first, second)
+            self.assertEqual(str(png), module.ICON_CACHE["lea-app"])
+
+    def test_rendered_key_image_composites_desktop_icon(self):
+        spec = module.DEVICE_SPECS[module.PLUS]
+        with tempfile.TemporaryDirectory() as directory:
+            cache = pathlib.Path(directory) / "keys"
+            icon = pathlib.Path(directory) / "firefox.svg"
+            icon.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"/>')
+            jpeg = b"\xff\xd8" + b"J" * 40
+
+            def fake_run(command, **_kwargs):
+                pathlib.Path(command[-1]).write_bytes(jpeg)
+                return subprocess.CompletedProcess(command, 0)
+
+            with mock.patch.object(module, "KEY_CACHE", cache), \
+                 mock.patch.object(module, "which", return_value="magick"), \
+                 mock.patch.object(module, "action_icon", return_value=str(icon)), \
+                 mock.patch.object(module.subprocess, "run", side_effect=fake_run) as run:
+                path = module.rendered_key_image("app:firefox", "Firefox", spec)
+            argv = run.call_args[0][0]
+            self.assertIn(str(icon), argv)
+            self.assertTrue(pathlib.Path(path).is_file())
 
 
 class FramingHelperTests(unittest.TestCase):
@@ -404,15 +458,20 @@ class FramingHelperTests(unittest.TestCase):
         self.assertEqual([0x03, 0x08, 0], values)
         self.assertEqual(32, length)
 
-    def test_plus_lcd_header_is_sixteen_byte_0x0c_rectangle(self):
-        header = module.plus_lcd_header(2, 194, True, 0, 0, 800, 100)
-        self.assertEqual(16, len(header))
+    def test_plus_lcd_header_is_eight_byte_0x0b_window(self):
+        header = module.plus_lcd_header(2, 194, True)
+        self.assertEqual(8, len(header))
         self.assertEqual(0x02, header[0])
+        self.assertEqual(0x0B, header[1])
+        self.assertEqual(1, header[3])
+        self.assertEqual(194, header[4])
+        self.assertEqual(2, header[6])
+
+    def test_plus_lcd_partial_header_is_unused_0x0c_fallback(self):
+        header = module.plus_lcd_partial_header(2, 194, True, 0, 0, 800, 100)
+        self.assertEqual(16, len(header))
         self.assertEqual(0x0C, header[1])
         self.assertEqual([800 & 255, 800 >> 8], header[6:8])
-        self.assertEqual(1, header[10])
-        self.assertEqual(2, header[11])
-        self.assertEqual(194, header[13])
 
     def test_jpeg_key_header_marks_final_page(self):
         header = module.jpeg_key_header(3, 2, 16, True)
@@ -526,6 +585,24 @@ class DualOpenAndDiscoveryTests(unittest.TestCase):
         self.assertEqual({"classic", "plus"}, {item["kind"] for item in daemon.status["devices"]})
         self.assertEqual({"classic", "plus"}, {item["kind"] for item in decorated})
 
+    def test_connect_does_not_reopen_plus_when_interface_flips(self):
+        first = self.plus_info("/dev/hidraw1", 0)
+        first["alternates"] = ["/dev/hidraw3"]
+        hid = self.fake_hid([first])
+        daemon = self.daemon(hid)
+        decorated = mock.Mock()
+        daemon.decorate = decorated
+        with mock.patch.object(module, "detect_wave", return_value=None):
+            daemon.connect()
+            flipped = self.plus_info("/dev/hidraw3", 3)
+            flipped["alternates"] = ["/dev/hidraw1"]
+            hid.paths.return_value = [flipped]
+            daemon.connect()
+        self.assertEqual(["/dev/hidraw1"], hid._opened)
+        self.assertEqual(1, len(daemon.devices))
+        self.assertEqual("/dev/hidraw1", next(iter(daemon.devices)))
+        self.assertEqual(1, decorated.call_count)
+
     def test_connect_opens_pedal_without_artwork_and_keeps_decks(self):
         hid = self.fake_hid([self.classic_info(), self.plus_info(), self.pedal_info()])
         daemon = self.daemon(hid)
@@ -606,7 +683,9 @@ class DualOpenAndDiscoveryTests(unittest.TestCase):
              mock.patch.object(module.shutil, "which", return_value=None):
             daemon.decorate(device)
         self.assertEqual([0x03, 0x08, 55], hid.features[0][0])
+        self.assertFalse(any(row[0][:2] == [0x03, 0x06] for row in hid.features))
         self.assertTrue(any(row[:2] == [0x02, 0x07] for row in hid.writes))
+        self.assertFalse(any(row[0] == 0x02 and row[1] == 0 for row in hid.writes))
         self.assertEqual("LCD rendering requires ImageMagick", daemon.status["error"])
 
     def test_decorate_pedal_does_not_write_artwork(self):
