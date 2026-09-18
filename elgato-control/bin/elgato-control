@@ -117,6 +117,8 @@ def acquire_daemon_lock():
     _DAEMON_LOCK_HANDLE = handle
     return handle
 KEY_CACHE = pathlib.Path(os.environ.get("XDG_CACHE_HOME", pathlib.Path.home() / ".cache")) / "elgato-control" / "keys"
+ICON_CACHE = {}
+ICON_CACHE_LIMIT = 512
 
 KEY_ACTIONS = {
     "key_home": "Home", "key_end": "End", "key_page_up": "Page_Up", "key_page_down": "Page_Down",
@@ -203,8 +205,26 @@ def original_bmp_header(page, hardware_index, final):
     return [0x02, 0x01, page + 1, 0, 1 if final else 0, hardware_index + 1] + [0] * 10
 
 
-def plus_lcd_header(page, chunk_len, final, x=0, y=0, width=800, height=100):
-    """Stream Deck + partial-window JPEG (official HID 0x02/0x0C, 16-byte header)."""
+def plus_lcd_header(page, chunk_len, final):
+    """Stream Deck + full window JPEG. Elgato HID Update Window Image: 0x02/0x0B, 8 bytes.
+
+    Classic 15-key never uses this path (keys are 0x02/0x07). 0x0C is the partial-
+    rectangle command (OpenDeck / python-elgato-streamdeck). This tree sent 0x0C
+    on main (f44ad0d); lea Plus only blinked. Keep 0x0B unless hardware smoke
+    proves a need for plus_lcd_partial_header().
+    """
+    return [
+        0x02, 0x0B, 0, 1 if final else 0,
+        chunk_len & 255, chunk_len >> 8, page & 255, page >> 8,
+    ]
+
+
+def plus_lcd_partial_header(page, chunk_len, final, x=0, y=0, width=800, height=100):
+    """Unused fallback: Elgato Update Partial Window Image (0x02/0x0C, 16 bytes).
+
+    Tried as the live LCD path; Plus flickered. Do not send from update_lcd()
+    unless lea smoke shows 0x0B still blank after magick/PATH is confirmed.
+    """
     return [
         0x02, 0x0C,
         x & 255, x >> 8,
@@ -762,24 +782,91 @@ def desktop_entry(desktop_id):
     return {}
 
 
-def resolve_icon(icon):
+def gtk_icon_theme_names():
+    names = []
+    for raw in (os.environ.get("ELGATO_ICON_THEME"), os.environ.get("GTK_ICON_THEME")):
+        if raw:
+            names.append(raw.split(":")[0].split(",")[0].strip())
+    for path in (
+        pathlib.Path.home() / ".config/gtk-4.0/settings.ini",
+        pathlib.Path.home() / ".config/gtk-3.0/settings.ini",
+        pathlib.Path("/etc/gtk-3.0/settings.ini"),
+    ):
+        try:
+            for line in path.read_text(errors="replace").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("gtk-icon-theme-name") and "=" in stripped:
+                    value = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                    if value:
+                        names.append(value)
+                    break
+        except OSError:
+            continue
+    ordered = []
+    for name in names + ["Adwaita", "breeze", "Papirus", "Papirus-Dark", "hicolor"]:
+        if name and name not in ordered:
+            ordered.append(name)
+    return ordered
+
+
+def gtk_lookup_icon(icon, size=128):
+    """gtk-icon-theme lookup. Never glob. Failures fall through to bounded paths."""
+    if not icon or "/" in str(icon):
+        return ""
+    name = pathlib.Path(icon).stem if pathlib.Path(icon).suffix else str(icon)
+    try:
+        import gi
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import Gtk
+        theme = Gtk.IconTheme.get_default()
+        info = theme.lookup_icon(name, int(size), 0)
+        filename = info.get_filename() if info else None
+        if filename and pathlib.Path(filename).is_file():
+            return filename
+    except Exception:
+        pass
+    return ""
+
+
+def _icon_file_names(icon):
+    suffix = pathlib.Path(icon).suffix.lower()
+    if suffix in (".svg", ".png", ".xpm", ".jpg", ".jpeg"):
+        return [icon, pathlib.Path(icon).name]
+    return [icon + extension for extension in (".svg", ".png", ".xpm")]
+
+
+def _icon_in_theme(theme_root, names):
+    for size in ("scalable", "128x128", "64x64", "48x48", "256x256", "32x32"):
+        for kind in ("apps", "devices", "status", "mimetypes", "places"):
+            for name in names:
+                candidate = theme_root / size / kind / name
+                if candidate.is_file():
+                    return str(candidate)
+    return ""
+
+
+def _resolve_icon_uncached(icon):
+    icon = str(icon).strip().strip('"').strip("'")
     if not icon:
         return ""
     direct = pathlib.Path(icon)
     if direct.is_file():
         return str(direct)
-    names = [icon] if pathlib.Path(icon).suffix.lower() in (".svg", ".png", ".xpm", ".jpg", ".jpeg") else [icon + extension for extension in (".svg", ".png", ".xpm")]
+    themed = gtk_lookup_icon(icon)
+    if themed:
+        return themed
+    names = _icon_file_names(icon)
     roots = []
     for directory in xdg_data_dirs():
         roots.append(directory / "icons")
         roots.append(directory / "pixmaps")
     roots.extend([
         pathlib.Path.home() / ".local/share/icons",
-        pathlib.Path("/usr/share/icons/hicolor"),
         pathlib.Path("/usr/share/pixmaps"),
     ])
     # Direct lookups only. Recursive glob over NixOS share/icons made `catalog`
     # miss the host's runAsync timeout, so the inspector had no actions.
+    themes = gtk_icon_theme_names()
     for root in roots:
         if not root.is_dir():
             continue
@@ -789,14 +876,27 @@ def resolve_icon(icon):
                 if candidate.is_file():
                     return str(candidate)
             continue
-        for theme in ("hicolor", "Adwaita", "breeze", "Papirus"):
-            for size in ("48x48", "64x64", "128x128", "32x32", "scalable"):
-                for kind in ("apps", "devices", "status", "mimetypes"):
-                    for name in names:
-                        candidate = root / theme / size / kind / name
-                        if candidate.is_file():
-                            return str(candidate)
+        for theme in themes:
+            found = _icon_in_theme(root / theme, names)
+            if found:
+                return found
+        found = _icon_in_theme(root, names)
+        if found:
+            return found
     return ""
+
+
+def resolve_icon(icon):
+    if not icon:
+        return ""
+    cached = ICON_CACHE.get(icon)
+    if cached is not None:
+        return cached
+    found = _resolve_icon_uncached(icon)
+    if len(ICON_CACHE) >= ICON_CACHE_LIMIT:
+        ICON_CACHE.clear()
+    ICON_CACHE[icon] = found
+    return found
 
 
 def action_icon(action):
@@ -830,7 +930,7 @@ def rendered_key_image(action, label, spec):
         return existing if existing.is_file() else None
     source = str(existing) if existing.is_file() else action_icon(action)
     source_stamp = str(pathlib.Path(source).stat().st_mtime_ns) if source and pathlib.Path(source).is_file() else "none"
-    digest = hashlib.sha256(json.dumps(["renderer-v5", action, label, source, source_stamp, size, fmt, rotate]).encode()).hexdigest()[:20]
+    digest = hashlib.sha256(json.dumps(["renderer-v6", action, label, source, source_stamp, size, fmt, rotate]).encode()).hexdigest()[:20]
     KEY_CACHE.mkdir(parents=True, exist_ok=True)
     suffix = ".bmp" if fmt == "bmp" else ".jpg"
     output = KEY_CACHE / (digest + suffix)
@@ -1415,12 +1515,14 @@ class Daemon:
         if spec.get("kind") == "pedal":
             return
         self.set_brightness(handle, spec, self.brightness)
-        if spec.get("kind") != "pedal":
+        # Plus shares the 0x02 output pipe between keys and the LCD strip. A
+        # zeroed reset report blanks both and looks like flicker. Classic JPEG
+        # keys are a separate device and keep the abort-prefix.
+        if spec.get("kind") != "plus":
             self.reset_key_stream(handle, spec)
         for index, key in enumerate(self.keys_for(spec)):
-            if spec.get("kind") == "plus":
-                color = key.get("color", [40, 90, 130])
-                self.hid.feature(handle, [0x03, 0x06, index] + [int(x) & 255 for x in color[:3]], spec.get("feature_len", 32))
+            # Do not Fill Button with Color (0x03 0x06) before JPEG. That solid
+            # fill then image rewrite is a visible blink on Plus LCD keys.
             self.send_key_image(handle, spec, index, key)
         if spec.get("kind") == "plus":
             self.update_lcd(handle, force=True)
@@ -1430,8 +1532,8 @@ class Daemon:
         if not force and signature == self.lcd_signature:
             return
         # Same extras as search_path() (NixOS /run/current-system, profiles).
-        # Do not use process PATH alone. LCD HID is Elgato 0x02/0x0C
-        # 16-byte rectangle.
+        # Do not use process PATH alone. LCD HID is Elgato 0x02/0x0B
+        # 8-byte full-window header — not 0x0C partial.
         converter = which("magick", "convert")
         if not converter:
             self.status["error"] = "LCD rendering requires ImageMagick"
@@ -1442,23 +1544,47 @@ class Daemon:
                 svg = pathlib.Path(directory) / "lcd.svg"
                 jpg = pathlib.Path(directory) / "lcd.jpg"
                 svg.write_text(lcd_svg(self.profile, self.brightness, self.light_states))
-                subprocess.run([converter, str(svg), "-quality", "90", str(jpg)], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                subprocess.run(
+                    [converter, str(svg), "-resize", "%dx%d!" % (width, height), "-quality", "90", str(jpg)],
+                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+                )
                 data = jpg.read_bytes()
-            report, header_len = 1024, 16
+            report, header_len = 1024, 8
             payload_len = report - header_len
             page = 0
             for offset in range(0, len(data), payload_len):
                 payload = data[offset:offset + payload_len]
                 final = offset + len(payload) >= len(data)
-                header = plus_lcd_header(page, len(payload), final, 0, 0, width, height)
+                header = plus_lcd_header(page, len(payload), final)
                 self.hid.write(handle, pad_hid_report(header, payload, report))
                 page += 1
             self.lcd_signature = signature
         except (OSError, subprocess.SubprocessError) as error:
             self.status["error"] = "LCD: " + str(error)
 
+    def _info_paths(self, info):
+        paths = [info.get("path")]
+        paths.extend(info.get("alternates") or [])
+        return [path for path in paths if path]
+
+    def _owned_paths(self):
+        owned = set()
+        for device in self.devices.values():
+            owned.update(self._info_paths(device))
+        return owned
+
+    def _already_open(self, info):
+        owned = self._owned_paths()
+        if any(path in owned for path in self._info_paths(info)):
+            return True
+        identity = (info.get("productId"), info.get("serial") or "")
+        for device in self.devices.values():
+            if (device.get("productId"), device.get("serial") or "") == identity:
+                return True
+        return False
+
     def _open_device(self, info):
-        candidates = [info["path"]] + [path for path in (info.get("alternates") or []) if path]
+        candidates = self._info_paths(info)
         seen = set()
         for path in candidates:
             if path in seen:
@@ -1505,9 +1631,9 @@ class Daemon:
                 self._publish_device_summary()
                 return
         found = self.hid.paths()
-        live = {item["path"] for item in found}
+        live = set()
         for item in found:
-            live.update(item.get("alternates") or [])
+            live.update(self._info_paths(item))
         for path in list(self.devices):
             if path not in live:
                 try:
@@ -1516,7 +1642,10 @@ class Daemon:
                     self.devices.pop(path, None)
         open_errors = []
         for info in found:
-            if info["path"] in self.devices:
+            # Plus enumerates multiple hidraw nodes. Opening a second interface
+            # while Classic stays on one path is the dual-deck blink: two writers
+            # on Plus, decorate/reset every connect() (2s).
+            if self._already_open(info):
                 continue
             handle = self._open_device(info)
             if handle:
